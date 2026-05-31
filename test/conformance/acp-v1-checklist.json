@@ -1,0 +1,1174 @@
+{
+  "schemaVersion": 1,
+  "protocolVersion": 1,
+  "sourceDocument": "docs/acp-implementation-audit.md",
+  "statusLegend": {
+    "implemented": "Implemented and has at least one direct test or smoke path.",
+    "partial": "Some behavior exists, but the stable ACP requirement is not fully covered.",
+    "missing": "No stable implementation exists yet.",
+    "not_advertised": "The capability is intentionally not advertised; callers must not use it.",
+    "external_gap": "Requires pi base, ACP SDK, client, or protocol work before adapter conformance is possible."
+  },
+  "architecturePrinciples": [
+    "Prefer pi-acp and pi extension implementations over pi base changes.",
+    "Treat pi base work as a fallback only after an extension-owned boundary is proven insufficient.",
+    "Write extension-owned ACP services behind narrow interfaces so they can move into pi base later without changing ACP-facing behavior.",
+    "Assume a near-base pi installation and provide reusable ACP-facing services that other pi extensions can consume."
+  ],
+  "entries": [
+    {
+      "surface": "agent_method",
+      "name": "initialize",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "test/unit/auth-methods-terminal-auth-meta.test.ts",
+        "test/conformance/acp-runtime-schema.test.ts"
+      ],
+      "next": "Add raw JSON-RPC envelope validation for initialize request/response."
+    },
+    {
+      "surface": "agent_method",
+      "name": "authenticate",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/auth.ts",
+        "test/unit/authenticate.test.ts",
+        "test/unit/auth-methods-terminal-auth-meta.test.ts",
+        "test/unit/new-session-auth-required-when-no-models.test.ts",
+        "test/unit/new-session-runtime-startup-errors.test.ts"
+      ],
+      "next": "Terminal auth is advertised only to SDK-capable clients (`clientCapabilities.auth.terminal`) or legacy Zed `_meta['terminal-auth']` clients. authenticate validates the method id, runs a short pi RPC model-availability probe, returns AUTH_REQUIRED if no authenticated model is available, and auth-required errors reuse the negotiated method set. Keep the probe lightweight and revisit if ACP adds cwd-scoped authenticate params."
+    },
+    {
+      "surface": "agent_method",
+      "name": "logout",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "src/acp/logout.ts", "test/unit/logout.test.ts"],
+      "next": "Adapter advertises logout only when no known non-clearable environment or models.json auth sources are configured, clears pi's stored auth.json credentials, and defensively rejects logout if non-clearable sources appear after initialize. A pi base hook would still be useful to replace mirrored auth-source detection with authoritative inventory."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/new",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension", "pi-base-fallback"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "src/pi-rpc/bridge-extension.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "src/pi-extension/mcp-stdio.ts",
+        "test/unit/new-session-auth-required-when-no-models.test.ts",
+        "test/component/bridge-extension-setup.test.ts",
+        "test/unit/pi-rpc-bridge-extension.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/unit/mcp-stdio-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Stable session/new requirements are covered: absolute cwd validation, unique session creation through pi state/UUID fallback, SDK-schema response validation, and extension-owned stdio MCP setup. HTTP/SSE remain unadvertised optional transports; native resource UX and registry-level unregister are pi API fidelity risks tracked outside stable v1 setup conformance."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/load",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/pi-messages.ts",
+        "src/pi-rpc/bridge-extension.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "src/pi-extension/mcp-stdio.ts",
+        "test/component/session-list-and-load.test.ts",
+        "test/component/session-load-toolresult.test.ts",
+        "test/unit/pi-messages.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/unit/mcp-stdio-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Keep session/load replaying all conversation history before response, including structured content, MCP bridge setup, historic assistant tool-call inputs when present, and synthetic tool calls for older result-only rows."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/resume",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension", "pi-base-fallback"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/pi-rpc/bridge-extension.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "src/pi-extension/mcp-stdio.ts",
+        "test/component/session-list-and-load.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/unit/mcp-stdio-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Keep no-replay resume, absolute cwd validation, active-session cwd matching, and resume lifecycle MCP bridge coverage current as session setup evolves."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/close",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "test/component/session-list-and-load.test.ts"],
+      "next": "Add in-flight prompt integration and already-exited-process regression tests."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/list",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "test/component/session-list-and-load.test.ts",
+        "test/component/session-list-scoped.test.ts"
+      ],
+      "next": "Add schema fixture coverage for cursor round-trips and invalid cursor errors."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/prompt",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "src/acp/client-stop-reasons.ts",
+        "src/acp/refusal-history.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/component/session-prompt-capabilities.test.ts",
+        "test/conformance/acp-runtime-schema.test.ts",
+        "test/conformance/acp-stdio-e2e.test.ts"
+      ],
+      "next": "Prompt content capability gates, full prompt-turn schema validation, stable prompt response stop reasons, tool failure payloads, client bridge prompt turns, and extension-owned refusal history rollback are covered; keep fixtures current as new pi event shapes appear."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/cancel",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "test/component/session-queue-cancel.test.ts",
+        "test/component/session-permissions.test.ts"
+      ],
+      "next": "Add schema fixture coverage for cancellation updates and stop reason ordering."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/set_mode",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "test/component/session-thinking-modes.test.ts"],
+      "next": "Keep legacy session/set_mode synchronized with current_mode_update and stable configOptions until clients no longer rely on modes."
+    },
+    {
+      "surface": "agent_method",
+      "name": "session/set_config_option",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "test/component/session-thinking-modes.test.ts"],
+      "next": "Add schema fixtures for invalid values and complete-state responses, then retire legacy modes when clients tolerate configOptions-only selection."
+    },
+    {
+      "surface": "client_method",
+      "name": "session/update",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "test/helpers/fakes.ts",
+        "test/conformance/acp-runtime-schema.test.ts"
+      ],
+      "next": "All emitted non-plan update variants have SDK schema fixtures and ordering assertions where order matters; ACP plan remains tracked separately as session_update/plan."
+    },
+    {
+      "surface": "client_method",
+      "name": "session/request_permission",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/client-permissions.ts",
+        "src/acp/client-bridge.ts",
+        "src/acp/session.ts",
+        "src/pi-rpc/process.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-permissions-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/issues/22",
+        "https://github.com/svkozak/pi-acp/pull/45"
+      ],
+      "next": "Extension UI select/confirm requests and configured sensitive pi tool_call preflights are bridged through ACP requestPermission with allow/reject-always session policy; keep the default sensitive-tool allowlist conservative and extension-owned."
+    },
+    {
+      "surface": "client_method",
+      "name": "fs/read_text_file",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-fs.ts",
+        "src/pi-rpc/bridge-rpc.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-fs-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Extension-owned bridge service plus acp_read_text_file and shadowed read tool delegate to ACP client fs when advertised; keep real-pi source-shadow E2E and deterministic prompt-turn coverage current."
+    },
+    {
+      "surface": "client_method",
+      "name": "fs/write_text_file",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-fs.ts",
+        "src/pi-rpc/bridge-rpc.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-fs-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-diff.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Extension-owned bridge service plus acp_write_text_file and shadowed write/edit tools delegate to ACP client fs when advertised; add more multi-edit/write edge cases."
+    },
+    {
+      "surface": "client_method",
+      "name": "terminal/create",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-terminal.ts",
+        "src/acp/client-bridge.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-terminal-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts",
+        "https://github.com/svkozak/pi-acp/pull/31"
+      ],
+      "next": "Extension-owned bridge service creates ACP client terminals for acp_terminal_execute and terminal-capable bash shadowing; keep prompt-turn interruption regressions current."
+    },
+    {
+      "surface": "client_method",
+      "name": "terminal/output",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-terminal.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-terminal-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Extension-owned service can retrieve current ACP client terminal output for acp_terminal_execute and terminal-capable bash shadowing; add truncation edge-case fixtures."
+    },
+    {
+      "surface": "client_method",
+      "name": "terminal/wait_for_exit",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-terminal.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-terminal-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Extension-owned service waits on ACP client terminals and timeout/abort interruptions are covered; add truncation and nonzero-exit fixtures."
+    },
+    {
+      "surface": "client_method",
+      "name": "terminal/kill",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-terminal.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-terminal-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts"
+      ],
+      "next": "Extension-owned service can kill ACP client terminals for explicit kill, timeout, and abort paths; add real-provider long-running command coverage when deterministic provider harness exists."
+    },
+    {
+      "surface": "client_method",
+      "name": "terminal/release",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-terminal.ts",
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-terminal-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Extension-owned execute and bash shims can retain terminals and pi-acp releases after emitting terminal ToolCallContent, including interrupted terminal results; add real-provider long-running command coverage when deterministic provider harness exists."
+    },
+    {
+      "surface": "session_update",
+      "name": "user_message_chunk",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/pi-messages.ts",
+        "test/unit/pi-messages.test.ts",
+        "test/component/session-list-and-load.test.ts"
+      ],
+      "next": "Keep adding fixtures as real pi history content shapes are discovered."
+    },
+    {
+      "surface": "session_update",
+      "name": "agent_message_chunk",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Keep expanding fixtures as new pi assistant content shapes are discovered."
+    },
+    {
+      "surface": "session_update",
+      "name": "agent_thought_chunk",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Keep expanding fixtures as new pi thought content shapes are discovered."
+    },
+    {
+      "surface": "session_update",
+      "name": "tool_call",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Keep expanding fixtures as new pi tool names or event shapes appear."
+    },
+    {
+      "surface": "session_update",
+      "name": "tool_call_update",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Keep expanding fixtures as new pi tool result shapes appear."
+    },
+    {
+      "surface": "session_update",
+      "name": "plan",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/client-plan.ts",
+        "src/acp/client-bridge.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-plan-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/conformance/acp-runtime-schema.test.ts"
+      ],
+      "next": "The bridge extension exposes publishPlan(entries) for independently authored pi extensions and forwards complete plan updates to ACP; add native pi plan-event mapping if pi grows a built-in plan concept."
+    },
+    {
+      "surface": "session_update",
+      "name": "available_commands_update",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "test/component/session-slash-commands.test.ts"],
+      "next": "Keep extension-command visibility policy tests current as command sourcing changes."
+    },
+    {
+      "surface": "session_update",
+      "name": "current_mode_update",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "test/component/session-thinking-modes.test.ts"],
+      "next": "Keep as compatibility while configOptions adoption settles."
+    },
+    {
+      "surface": "session_update",
+      "name": "config_option_update",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "src/acp/config-options.ts",
+        "test/component/session-thinking-modes.test.ts",
+        "test/component/session-events.test.ts"
+      ],
+      "next": "Keep complete config state emissions current for ACP-driven config changes and pi model_update/thinking_level_update events."
+    },
+    {
+      "surface": "session_update",
+      "name": "session_info_update",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "test/unit/builtin-commands.test.ts",
+        "test/component/session-title-long-session.test.ts",
+        "test/component/session-updatedAt-message-only.test.ts"
+      ],
+      "next": "Keep schema and no sessionId/cwd regression coverage current as more metadata updates are added."
+    },
+    {
+      "surface": "content_block",
+      "name": "text",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/translate/prompt.ts", "test/unit/prompt-to-pi-message.test.ts"],
+      "next": "Schema-check prompt and update payloads."
+    },
+    {
+      "surface": "content_block",
+      "name": "resource_link",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/translate/prompt.ts",
+        "src/acp/prompt-resources.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/prompt-to-pi-message.test.ts",
+        "test/unit/prompt-resources.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts"
+      ],
+      "next": "Keep active-turn prompt resource links readable through the extension-owned service for file, data, and fetchable http(s) URIs; validate native client resource UX only if clients require more than tool shims."
+    },
+    {
+      "surface": "content_block",
+      "name": "image",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/prompt.ts",
+        "test/unit/prompt-to-pi-message.test.ts",
+        "test/component/session-prompt-capabilities.test.ts"
+      ],
+      "next": "Keep capability-gated prompt coverage current if image support becomes configurable."
+    },
+    {
+      "surface": "content_block",
+      "name": "audio",
+      "status": "not_advertised",
+      "priority": "p3",
+      "owners": ["pi-extension", "pi-base-fallback"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/prompt.ts",
+        "test/component/session-prompt-capabilities.test.ts"
+      ],
+      "next": "Keep unadvertised and rejected at the prompt boundary until pi can consume audio."
+    },
+    {
+      "surface": "content_block",
+      "name": "resource",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/prompt.ts",
+        "test/unit/prompt-to-pi-message.test.ts",
+        "test/unit/pi-enable-embed-context-flag.test.ts",
+        "test/component/session-prompt-capabilities.test.ts"
+      ],
+      "next": "Keep text and blob embedded-context conversion behind promptCapabilities.embeddedContext; add explicit size limits only if pi introduces one."
+    },
+    {
+      "surface": "stop_reason",
+      "name": "end_turn",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Add schema fixture coverage for normal and error-fallback end_turn responses."
+    },
+    {
+      "surface": "stop_reason",
+      "name": "cancelled",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-queue-cancel.test.ts",
+        "test/component/session-permissions.test.ts"
+      ],
+      "next": "Add schema fixture coverage for cancelled prompt responses."
+    },
+    {
+      "surface": "stop_reason",
+      "name": "max_tokens",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-events.test.ts",
+        "test/conformance/acp-runtime-schema.test.ts"
+      ],
+      "next": "Keep mapping pi assistant stopReason length to ACP max_tokens; broaden only if pi introduces another token-limit signal."
+    },
+    {
+      "surface": "stop_reason",
+      "name": "max_turn_requests",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/client-stop-reasons.ts",
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-stop-reasons-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/component/session-events.test.ts",
+        "test/conformance/acp-runtime-schema.test.ts"
+      ],
+      "next": "The bridge extension exposes setPromptStopReason('max_turn_requests') for extensions that enforce turn limits, and future pi-native stopReason values map directly; add a native pi event mapping if pi grows an internal max-turn limit."
+    },
+    {
+      "surface": "stop_reason",
+      "name": "refusal",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/client-stop-reasons.ts",
+        "src/acp/refusal-history.ts",
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-stop-reasons-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/component/session-events.test.ts",
+        "test/conformance/acp-runtime-schema.test.ts"
+      ],
+      "next": "The bridge extension can return ACP refusal for extension/provider refusals, pi-native refusal values enter the same rollback path, and the adapter downgrades to end_turn if command-context tree navigation cannot prove the refused branch was excluded."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "read",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Add explicit runtime schema fixture for read tool calls."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "edit",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension", "pi-base-fallback"],
+      "evidence": [
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/component/session-diff.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Shadowed client-fs edit preserves pi exact-replacement semantics and deterministic prompt-turn coverage verifies multi-edit ACP diff emission; add real-provider tool-selection evidence when a deterministic provider harness exists."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "delete",
+      "status": "implemented",
+      "priority": "p3",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/tool-kind.ts",
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "test/component/session-events.test.ts"
+      ],
+      "next": "Extension-visible delete-like tool names map to stable ACP delete kind; add explicit provider/native-tool fixtures if pi ships native delete tools."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "move",
+      "status": "implemented",
+      "priority": "p3",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/tool-kind.ts",
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "test/component/session-events.test.ts"
+      ],
+      "next": "Extension-visible move/rename-like tool names map to stable ACP move kind; add explicit provider/native-tool fixtures if pi ships native move tools."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "search",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/tool-kind.ts",
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-load-toolresult.test.ts"
+      ],
+      "next": "Live and loaded pi grep/find/ls/search/rg-like tools map to stable ACP search kind; add broader extension-defined classification only if pi exposes hints."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "execute",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/tool-kind.ts",
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-load-toolresult.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts",
+        "https://github.com/svkozak/pi-acp/pull/31"
+      ],
+      "next": "Bash and ACP terminal-backed execution tools map to stable ACP execute kind for live and loaded history; add extension-defined classification only if pi exposes richer tool hints."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "think",
+      "status": "implemented",
+      "priority": "p3",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/tool-kind.ts",
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-load-toolresult.test.ts"
+      ],
+      "next": "Extension-visible think/reason/plan-like tool names map to stable ACP think kind; add explicit provider/native-tool fixtures if pi ships native thinking tools."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "fetch",
+      "status": "implemented",
+      "priority": "p3",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/tool-kind.ts",
+        "src/acp/session.ts",
+        "src/acp/agent.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-load-toolresult.test.ts"
+      ],
+      "next": "Extension-visible fetch/web-like tool names map to stable ACP fetch kind; add explicit provider/native-tool fixtures if pi ships native fetch tools."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "switch_mode",
+      "status": "implemented",
+      "priority": "p3",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/tool-kind.ts", "src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Extension-visible switch/set/change-mode tool names map to stable ACP switch_mode kind; add explicit fixtures if pi exposes mode-switch tools."
+    },
+    {
+      "surface": "tool_kind",
+      "name": "other",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts"],
+      "next": "Keep as fallback only."
+    },
+    {
+      "surface": "tool_status",
+      "name": "pending",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Covered by streaming-args fixture; keep expanding as new pi tool event shapes appear."
+    },
+    {
+      "surface": "tool_status",
+      "name": "in_progress",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Covered by monotonic-status and duplicate-start assertions; keep expanding as new pi tool event shapes appear."
+    },
+    {
+      "surface": "tool_status",
+      "name": "completed",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Add content replacement fixture."
+    },
+    {
+      "surface": "tool_status",
+      "name": "failed",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Covered by visible failed-tool output fixture; keep expanding as new pi tool result shapes appear."
+    },
+    {
+      "surface": "tool_content",
+      "name": "content",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/session.ts", "test/component/session-events.test.ts"],
+      "next": "Schema-check nested content blocks."
+    },
+    {
+      "surface": "tool_content",
+      "name": "diff",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/component/session-diff.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts"
+      ],
+      "next": "Local edit snapshots and adapter-managed ACP client fs write/edit results emit structured diffs with absolute paths, including nullable oldText; unchanged and relative-path results fall back to text content."
+    },
+    {
+      "surface": "tool_content",
+      "name": "terminal",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp", "pi-extension"],
+      "evidence": [
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts",
+        "https://github.com/svkozak/pi-acp/pull/31"
+      ],
+      "next": "Adapter emits terminal ToolCallContent for adapter-managed acp_terminal_execute results and terminal-capable bash shadowing, then releases after the update flushes; interrupted terminal results are covered."
+    },
+    {
+      "surface": "permission_option_kind",
+      "name": "allow_once",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/issues/22"
+      ],
+      "next": "Add schema fixture coverage."
+    },
+    {
+      "surface": "permission_option_kind",
+      "name": "allow_always",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/issues/22"
+      ],
+      "next": "Extension confirm prompts can offer allow_always and cache the selected policy for matching prompts within the ACP session; extend to durable policy only if pi exposes a safe persistence primitive."
+    },
+    {
+      "surface": "permission_option_kind",
+      "name": "reject_once",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/issues/22"
+      ],
+      "next": "Add schema fixture coverage."
+    },
+    {
+      "surface": "permission_option_kind",
+      "name": "reject_always",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/issues/22"
+      ],
+      "next": "Extension confirm prompts can offer reject_always and cache the selected policy for matching prompts within the ACP session; extend to durable policy only if pi exposes a safe persistence primitive."
+    },
+    {
+      "surface": "permission_outcome",
+      "name": "selected",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/pull/45"
+      ],
+      "next": "Add schema fixture coverage."
+    },
+    {
+      "surface": "permission_outcome",
+      "name": "cancelled",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/session.ts",
+        "test/component/session-permissions.test.ts",
+        "https://github.com/svkozak/pi-acp/pull/45"
+      ],
+      "next": "Add schema fixture coverage."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "auth.logout",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts", "test/unit/logout.test.ts"],
+      "next": "Capability is omitted when known environment or models.json auth would survive logout; when advertised, logout clears stored auth.json and leaves no detected non-clearable provider source. Keep the mirrored pi auth-source inventory synchronized with pi base."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "loadSession",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts"],
+      "next": "Keep capability truthful as load fidelity improves."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "mcpCapabilities.http",
+      "status": "not_advertised",
+      "priority": "p2",
+      "owners": ["pi-extension", "pi-base-fallback"],
+      "evidence": ["src/acp/agent.ts"],
+      "next": "Do not advertise until an extension-owned HTTP MCP path is supported."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "mcpCapabilities.sse",
+      "status": "not_advertised",
+      "priority": "p3",
+      "owners": ["pi-extension", "pi-base-fallback"],
+      "evidence": ["src/acp/agent.ts"],
+      "next": "Likely keep unadvertised unless an extension-owned SSE MCP path is explicitly needed."
+    },
+    {
+      "surface": "session_setup_requirement",
+      "name": "mcpServers.bridge_setup",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension", "pi-base-fallback"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "src/pi-rpc/process.ts",
+        "src/pi-rpc/bridge-extension.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "src/pi-extension/mcp-stdio.ts",
+        "test/component/bridge-extension-setup.test.ts",
+        "test/unit/pi-rpc-bridge-extension.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/unit/mcp-stdio-bridge.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Pi subprocess E2E verifies stdio MCP tool registration, failed setup status, resource list/read service access, active-session isolation, and load/resume lifecycle setup through pi; unit coverage verifies MCP tool-result resource/link conversion, dynamic MCP tool additions, dynamic MCP resource list refresh, MCP resource list/read service methods/tool shims, and dynamic removal via active-tool deactivation plus disabled fallback stubs. Registry-level unregister is not an ACP v1 requirement and would require a pi extension API addition if clients require removed tools to disappear from getAllTools()."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "promptCapabilities.image",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/prompt.ts",
+        "test/component/session-prompt-capabilities.test.ts"
+      ],
+      "next": "Keep advertised while image prompt content is accepted and translated for pi."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "promptCapabilities.audio",
+      "status": "not_advertised",
+      "priority": "p3",
+      "owners": ["pi-extension", "pi-base-fallback"],
+      "evidence": ["src/acp/agent.ts", "test/component/session-prompt-capabilities.test.ts"],
+      "next": "Keep false and reject audio prompt content until audio support exists."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "promptCapabilities.embeddedContext",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/translate/prompt.ts",
+        "test/unit/pi-enable-embed-context-flag.test.ts",
+        "test/unit/prompt-to-pi-message.test.ts",
+        "test/component/session-prompt-capabilities.test.ts"
+      ],
+      "next": "Default remains false; keep prompt rejection when disabled and text/blob conversion when enabled."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "sessionCapabilities.close",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": ["src/acp/agent.ts"],
+      "next": "Keep advertised while closeSession behavior remains covered by tests."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "sessionCapabilities.list",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "test/conformance/acp-runtime-schema.test.ts",
+        "test/component/session-list-and-load.test.ts",
+        "test/component/session-list-scoped.test.ts"
+      ],
+      "next": "Keep advertised while stable method wiring, cwd filtering, and opaque cursor behavior remain covered."
+    },
+    {
+      "surface": "agent_capability_gate",
+      "name": "sessionCapabilities.resume",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "test/component/session-list-and-load.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Keep advertised while no-replay behavior, active-session cwd matching, and resume MCP bridge setup remain covered."
+    },
+    {
+      "surface": "client_capability_gate",
+      "name": "fs.readTextFile",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-fs.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-fs-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Bridge rejects unadvertised reads and only registers explicit/shadow read tools with adapter RPC plus client fs capability; keep capability-gate fixtures current."
+    },
+    {
+      "surface": "client_capability_gate",
+      "name": "fs.writeTextFile",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-fs.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-fs-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Bridge rejects unadvertised writes and only registers explicit/shadow write/edit tools with adapter RPC plus client fs capability; keep capability-gate fixtures current."
+    },
+    {
+      "surface": "client_capability_gate",
+      "name": "terminal",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-extension", "pi-acp"],
+      "evidence": [
+        "src/acp/client-terminal.ts",
+        "src/acp/client-bridge.ts",
+        "src/acp/session.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/unit/client-terminal-bridge.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts",
+        "test/component/session-events.test.ts",
+        "test/component/session-client-bridge-prompt-turn.test.ts",
+        "test/e2e/pi-subprocess-mcp.e2e.ts"
+      ],
+      "next": "Adapter only opens terminal delegation when clientCapabilities.terminal is true and adapter RPC is available, and the bridge shadows bash only in that mode; keep capability-gate fixtures current."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "stdio_utf8_jsonl",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "sdk"],
+      "evidence": [
+        "src/index.ts",
+        "src/pi-rpc/jsonl.ts",
+        "test/unit/jsonl-line-reader.test.ts",
+        "test/conformance/acp-stdio-e2e.test.ts",
+        "https://github.com/svkozak/pi-acp/pull/41"
+      ],
+      "next": "Keep subprocess JSONL fixtures current as new stable request/update paths are added."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "no_non_acp_stdout",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp", "pi-extension", "pi-base-fallback"],
+      "evidence": [
+        "src/index.ts",
+        "src/pi-rpc/process.ts",
+        "src/pi-extension/acp-bridge.ts",
+        "test/conformance/acp-stdio-e2e.test.ts",
+        "test/unit/pi-extension-acp-bridge.test.ts"
+      ],
+      "next": "Keep stdout-only assertions on future subprocess paths; prompt-turn subprocess coverage remains tracked by stdio_utf8_jsonl."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "no_non_acp_stdin",
+      "status": "implemented",
+      "priority": "p1",
+      "owners": ["pi-acp"],
+      "evidence": ["src/index.ts"],
+      "next": "Cover with transport fixture."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "stderr_logs_allowed",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": ["src/pi-rpc/process.ts"],
+      "next": "Keep logs off stdout."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "custom_fields_in_meta",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "test/component/bridge-extension-setup.test.ts",
+        "test/component/session-list-and-load.test.ts"
+      ],
+      "next": "Keep adapter-owned response state under _meta; legacy modes remains only because stable ACP documents it as a transitional session response field."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "custom_methods_start_with_underscore",
+      "status": "implemented",
+      "priority": "p2",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "test/conformance/acp-v1-checklist.test.ts",
+        "test/conformance/acp-v1-meta.json"
+      ],
+      "next": "Keep stable conformance driven by the frozen v1 inventory. The SDK-only session/set_model method is served as an explicit compatibility alias for model config selection; do not add other non-stable methods unless they are deliberately tracked."
+    },
+    {
+      "surface": "transport_requirement",
+      "name": "absolute_protocol_paths",
+      "status": "implemented",
+      "priority": "p0",
+      "owners": ["pi-acp"],
+      "evidence": [
+        "src/acp/agent.ts",
+        "src/acp/session.ts",
+        "src/acp/client-fs.ts",
+        "src/acp/client-terminal.ts",
+        "src/acp/prompt-resources.ts",
+        "test/conformance/acp-absolute-paths.test.ts",
+        "test/component/session-diff.test.ts",
+        "test/component/session-list-and-load.test.ts"
+      ],
+      "next": "Keep rejecting relative session cwd/client fs/terminal cwd inputs and keep emitted tool locations, diffs, and prompt resource file paths absolute as new path-bearing fields are added."
+    }
+  ],
+  "knownSdkDrift": {
+    "installedPackage": "@agentclientprotocol/sdk",
+    "installedVersion": "0.22.1",
+    "latestObservedVersion": "0.22.1",
+    "notes": [
+      "The installed SDK schema contains compatibility, preview, and unstable methods that are not in the audited stable ACP v1 method inventory, including session/fork, document notifications, providers, NES, and MCP-over-ACP surfaces. session/set_model is intentionally served as a compatibility alias for session/set_config_option model selection.",
+      "The installed SDK now dispatches stable logout, session/close, session/resume, and session/set_config_option.",
+      "Use this checklist as the stable v1 target; track extra SDK surfaces separately from ACP-complete claims."
+    ]
+  }
+}
