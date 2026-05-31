@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import * as readline from 'node:readline'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
+import { JsonlLineReader } from './jsonl.js'
+import { preparePiAcpBridgeWithRpc, type PiAcpBridgeSetup, type PreparedPiAcpBridge } from './bridge-extension.js'
+import type { BridgeRpcHandler } from './bridge-rpc.js'
 
 export class PiRpcSpawnError extends Error {
   /** Underlying spawn error code, e.g. ENOENT, EACCES */
@@ -52,6 +54,11 @@ type PiRpcCommand =
   // Commands
   | { type: 'get_commands'; id?: string }
 
+type PiRpcExtensionUiResponsePayload =
+  | { id: string; value: string }
+  | { id: string; confirmed: boolean }
+  | { id: string; cancelled: true }
+
 type PiRpcResponse = {
   type: 'response'
   id?: string
@@ -69,56 +76,76 @@ type SpawnParams = {
   piCommand?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
+  /** Per-session setup consumed by the bundled ACP bridge extension. */
+  bridgeSetup?: PiAcpBridgeSetup
+  /** Optional adapter callback handler for bridge extension requests. */
+  bridgeRpcHandler?: BridgeRpcHandler | null
+}
+
+export function buildPiRpcArgs(
+  params: Pick<SpawnParams, 'sessionPath'> & { bridgeExtensionPath?: string | null }
+): string[] {
+  const args = ['--mode', 'rpc', '--no-themes']
+  if (params.sessionPath) args.push('--session', params.sessionPath)
+  if (params.bridgeExtensionPath) args.push('--extension', params.bridgeExtensionPath)
+  return args
 }
 
 export class PiRpcProcess {
   private readonly child: ChildProcessWithoutNullStreams
+  private readonly bridge: PreparedPiAcpBridge | null
   private readonly pending = new Map<string, { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void }>()
   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
   private readonly preludeLines: string[] = []
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(child: ChildProcessWithoutNullStreams, bridge: PreparedPiAcpBridge | null = null) {
     this.child = child
+    this.bridge = bridge
 
-    const rl = readline.createInterface({ input: child.stdout })
-    rl.on('line', line => {
-      if (!line.trim()) return
-      let msg: any
-      try {
-        msg = JSON.parse(line)
-      } catch {
-        // pi may emit a human-readable prelude on stdout before NDJSON starts.
-        // Capture it so the ACP adapter can surface it on session start.
-        const cleaned = stripAnsi(String(line)).trimEnd()
-        if (cleaned) this.preludeLines.push(cleaned)
-        return
-      }
-
-      if (msg?.type === 'response') {
-        const id = typeof msg.id === 'string' ? msg.id : undefined
-        if (id) {
-          const pending = this.pending.get(id)
-          if (pending) {
-            this.pending.delete(id)
-            pending.resolve(msg as PiRpcResponse)
-            return
-          }
-        }
-      }
-
-      for (const h of this.eventHandlers) h(msg as PiRpcEvent)
-    })
+    const stdout = new JsonlLineReader(line => this.handleStdoutLine(line))
+    child.stdout.on('data', chunk => stdout.push(chunk))
+    child.stdout.on('end', () => stdout.end())
 
     child.on('exit', (code, signal) => {
       const err = new Error(`pi process exited (code=${code}, signal=${signal})`)
       for (const [, p] of this.pending) p.reject(err)
       this.pending.clear()
+      this.cleanupBridge()
     })
 
     child.on('error', err => {
       for (const [, p] of this.pending) p.reject(err)
       this.pending.clear()
+      this.cleanupBridge()
     })
+  }
+
+  private handleStdoutLine(line: string): void {
+    if (!line.trim()) return
+    let msg: any
+    try {
+      msg = JSON.parse(line)
+    } catch {
+      // pi may emit a human-readable prelude on stdout before NDJSON starts.
+      // Capture it so the ACP adapter can surface it on session start.
+      const cleaned = stripAnsi(String(line)).trimEnd()
+      if (cleaned) this.preludeLines.push(cleaned)
+      return
+    }
+
+    if (msg?.type === 'response') {
+      const id = typeof msg.id === 'string' ? msg.id : undefined
+      if (id) {
+        const pending = this.pending.get(id)
+        if (pending) {
+          this.pending.delete(id)
+          pending.resolve(msg as PiRpcResponse)
+          return
+        }
+      }
+    }
+
+    for (const h of this.eventHandlers) h(msg as PiRpcEvent)
   }
 
   static async spawn(params: SpawnParams): Promise<PiRpcProcess> {
@@ -129,13 +156,15 @@ export class PiRpcProcess {
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
-    const args = ['--mode', 'rpc', '--no-themes']
-    if (params.sessionPath) args.push('--session', params.sessionPath)
+    const bridge = params.bridgeSetup
+      ? await preparePiAcpBridgeWithRpc(params.bridgeSetup, { handler: params.bridgeRpcHandler })
+      : null
+    const args = buildPiRpcArgs({ sessionPath: params.sessionPath, bridgeExtensionPath: bridge?.extensionPath })
 
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: process.env,
+      env: { ...process.env, ...(bridge?.env ?? {}) },
       shell: shouldUseShellForPiCommand(cmd)
     })
 
@@ -160,6 +189,7 @@ export class PiRpcProcess {
         child.once('error', onError)
       })
     } catch (e: any) {
+      bridge?.cleanup()
       const code = typeof e?.code === 'string' ? e.code : undefined
       if (code === 'ENOENT') {
         throw new PiRpcSpawnError(
@@ -179,7 +209,7 @@ export class PiRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new PiRpcProcess(child)
+    const proc = new PiRpcProcess(child, bridge)
 
     // Best-effort handshake.
     // Important: pi may emit a get_state response pointing at a sessionFile in a directory
@@ -208,12 +238,20 @@ export class PiRpcProcess {
   }
 
   dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
-    if (this.child.killed) return
+    if (this.child.killed) {
+      this.cleanupBridge()
+      return
+    }
     try {
       this.child.kill(signal as any)
     } catch {
       // ignore
     }
+    this.cleanupBridge()
+  }
+
+  private cleanupBridge(): void {
+    this.bridge?.cleanup()
   }
 
   /**
@@ -312,6 +350,10 @@ export class PiRpcProcess {
     const res = await this.request({ type: 'get_commands' })
     if (!res.success) throw new Error(`pi get_commands failed: ${res.error ?? JSON.stringify(res.data)}`)
     return res.data
+  }
+
+  sendExtensionUiResponse(response: PiRpcExtensionUiResponsePayload): void {
+    this.child.stdin.write(JSON.stringify({ type: 'extension_ui_response', ...response }) + '\n')
   }
 
   private request(cmd: PiRpcCommand): Promise<PiRpcResponse> {

@@ -1,0 +1,80 @@
+{
+  "protocolVersion": 1,
+  "source": {
+    "repository": "agentclientprotocol/agent-client-protocol",
+    "commit": "bbeed28",
+    "files": [
+      "schema/meta.json",
+      "schema/schema.json",
+      "docs/protocol/*.mdx",
+      "docs/get-started/architecture.mdx",
+      "docs/get-started/agents.mdx"
+    ]
+  },
+  "agentMethods": [
+    "authenticate",
+    "initialize",
+    "logout",
+    "session/cancel",
+    "session/close",
+    "session/list",
+    "session/load",
+    "session/new",
+    "session/prompt",
+    "session/resume",
+    "session/set_config_option",
+    "session/set_mode"
+  ],
+  "clientMethods": [
+    "fs/read_text_file",
+    "fs/write_text_file",
+    "session/request_permission",
+    "session/update",
+    "terminal/create",
+    "terminal/kill",
+    "terminal/output",
+    "terminal/release",
+    "terminal/wait_for_exit"
+  ],
+  "sessionUpdates": [
+    "user_message_chunk",
+    "agent_message_chunk",
+    "agent_thought_chunk",
+    "tool_call",
+    "tool_call_update",
+    "plan",
+    "available_commands_update",
+    "current_mode_update",
+    "config_option_update",
+    "session_info_update"
+  ],
+  "contentBlocks": ["text", "resource_link", "image", "audio", "resource"],
+  "stopReasons": ["end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled"],
+  "toolKinds": ["read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"],
+  "toolStatuses": ["pending", "in_progress", "completed", "failed"],
+  "toolContents": ["content", "diff", "terminal"],
+  "permissionOptionKinds": ["allow_once", "allow_always", "reject_once", "reject_always"],
+  "permissionOutcomes": ["selected", "cancelled"],
+  "agentCapabilityGates": [
+    "auth.logout",
+    "loadSession",
+    "mcpCapabilities.http",
+    "mcpCapabilities.sse",
+    "promptCapabilities.image",
+    "promptCapabilities.audio",
+    "promptCapabilities.embeddedContext",
+    "sessionCapabilities.close",
+    "sessionCapabilities.list",
+    "sessionCapabilities.resume"
+  ],
+  "clientCapabilityGates": ["fs.readTextFile", "fs.writeTextFile", "terminal"],
+  "transportRequirements": [
+    "stdio_utf8_jsonl",
+    "no_non_acp_stdout",
+    "no_non_acp_stdin",
+    "stderr_logs_allowed",
+    "custom_fields_in_meta",
+    "custom_methods_start_with_underscore",
+    "absolute_protocol_paths"
+  ]
+}

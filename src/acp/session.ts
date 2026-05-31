@@ -1,20 +1,36 @@
 import type {
   AgentSideConnection,
+  AuthMethod,
   ContentBlock,
   McpServer,
+  PermissionOption,
+  RequestPermissionRequest,
   SessionUpdate,
   ToolCallContent,
-  ToolCallLocation,
-  ToolKind
+  ToolCallLocation
 } from '@agentclientprotocol/sdk'
 import { RequestError } from '@agentclientprotocol/sdk'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
+import type { PiAcpBridgeSetup } from '../pi-rpc/bridge-extension.js'
+import type { BridgeRpcHandler } from '../pi-rpc/bridge-rpc.js'
 import { SessionStore } from './session-store.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
+import { createClientBridgeRpcHandler, shouldStartClientBridgeRpc } from './client-bridge.js'
+import type { PromptStopReasonOverrideStore } from './client-stop-reasons.js'
+import { supportsClientTerminal } from './client-terminal.js'
+import type { PromptResourceLink, PromptResourceStore } from './prompt-resources.js'
+import { ACP_RESTORE_REFUSAL_HISTORY_COMMAND } from './refusal-history.js'
+import { toToolKind } from './tool-kind.js'
+import {
+  getSessionConfigOptions,
+  isThinkingLevel,
+  type ConfigStateOverride,
+  type ThinkingLevel
+} from './config-options.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -22,9 +38,15 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
+  bridgeSetup?: PiAcpBridgeSetup
+  bridgeRpcHandler?: BridgeRpcHandler | null
+  promptResourceStore?: PromptResourceStore | null
+  stopReasonOverrides?: PromptStopReasonOverrideStore | null
+  terminalBackedToolNames?: string[]
+  authMethods?: AuthMethod[]
 }
 
-export type StopReason = 'end_turn' | 'cancelled' | 'error'
+export type StopReason = 'end_turn' | 'cancelled' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'error'
 
 type PendingTurn = {
   resolve: (reason: StopReason) => void
@@ -34,6 +56,7 @@ type PendingTurn = {
 type QueuedTurn = {
   message: string
   images: unknown[]
+  resourceLinks: PromptResourceLink[]
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
@@ -65,6 +88,53 @@ function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCal
   return [{ path: resolvedPath, ...(typeof line === 'number' ? { line } : {}) }]
 }
 
+function adapterManagedTerminalId(result: unknown): string | null {
+  const details = (result as { details?: unknown } | null | undefined)?.details
+  if (!details || typeof details !== 'object') return null
+
+  const raw = details as { source?: unknown; terminalRelease?: unknown; terminalId?: unknown }
+  if (raw.source !== 'acp-client-terminal') return null
+  if (raw.terminalRelease !== 'pi-acp-after-tool-call-update') return null
+  return typeof raw.terminalId === 'string' && raw.terminalId ? raw.terminalId : null
+}
+
+function terminalToolCallContent(result: unknown, text: string): ToolCallContent[] | null {
+  const terminalId = adapterManagedTerminalId(result)
+  if (!terminalId) return null
+
+  return [
+    { type: 'terminal', terminalId },
+    ...(text ? ([{ type: 'content', content: { type: 'text', text } }] as ToolCallContent[]) : [])
+  ]
+}
+
+function adapterManagedDiffContent(result: unknown, text: string): ToolCallContent[] | null {
+  const details = (result as { details?: unknown } | null | undefined)?.details
+  if (!details || typeof details !== 'object') return null
+
+  const raw = details as { source?: unknown; path?: unknown; oldText?: unknown; newText?: unknown }
+  if (raw.source !== 'acp-client-fs') return null
+  if (typeof raw.path !== 'string' || !raw.path) return null
+  if (!isAbsolute(raw.path)) return null
+  if (typeof raw.newText !== 'string') return null
+  if (raw.oldText !== null && typeof raw.oldText !== 'string') return null
+  if (raw.oldText === raw.newText) return null
+
+  return [
+    {
+      type: 'diff',
+      path: raw.path,
+      oldText: raw.oldText,
+      newText: raw.newText
+    },
+    ...(text ? ([{ type: 'content', content: { type: 'text', text } }] as ToolCallContent[]) : [])
+  ]
+}
+
+function terminalBackedToolNames(capabilities: unknown): string[] {
+  return supportsClientTerminal(capabilities as any) ? ['bash', 'acp_terminal_execute'] : []
+}
+
 export class SessionManager {
   private sessions = new Map<string, PiAcpSession>()
   private readonly store = new SessionStore()
@@ -86,6 +156,7 @@ export class SessionManager {
   close(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
+    s.clearPromptResourceLinks()
     try {
       s.proc.dispose?.()
     } catch {
@@ -106,10 +177,24 @@ export class SessionManager {
     // Let pi manage session persistence in its default location (~/.pi/agent/sessions/...)
     // so sessions are visible to the regular `pi` CLI.
     let proc: PiRpcProcess
+    let bridgeSessionId = typeof params.bridgeSetup?.sessionId === 'string' ? params.bridgeSetup.sessionId : null
+    const bridgeRpcHandler =
+      params.bridgeSetup && shouldStartClientBridgeRpc(params.bridgeSetup.clientCapabilities as any)
+        ? createClientBridgeRpcHandler({
+            conn: params.conn,
+            clientCapabilities: params.bridgeSetup.clientCapabilities as any,
+            getSessionId: () => bridgeSessionId,
+            promptResourceStore: params.promptResourceStore,
+            stopReasonOverrides: params.stopReasonOverrides
+          })
+        : null
+
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
-        piCommand: params.piCommand
+        piCommand: params.piCommand,
+        bridgeSetup: params.bridgeSetup,
+        bridgeRpcHandler
       })
     } catch (e) {
       if (e instanceof PiRpcSpawnError) {
@@ -126,6 +211,7 @@ export class SessionManager {
     }
 
     const sessionId = typeof state?.sessionId === 'string' ? state.sessionId : crypto.randomUUID()
+    bridgeSessionId = sessionId
     const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
 
     if (sessionFile) {
@@ -138,7 +224,12 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      bridgeRpcHandler,
+      promptResourceStore: params.promptResourceStore,
+      stopReasonOverrides: params.stopReasonOverrides,
+      terminalBackedToolNames: terminalBackedToolNames(params.bridgeSetup?.clientCapabilities),
+      authMethods: params.authMethods
     })
 
     this.sessions.set(sessionId, session)
@@ -165,7 +256,13 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc: params.proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      bridgeRpcHandler: params.bridgeRpcHandler ?? null,
+      promptResourceStore: params.promptResourceStore,
+      stopReasonOverrides: params.stopReasonOverrides,
+      terminalBackedToolNames:
+        params.terminalBackedToolNames ?? terminalBackedToolNames(params.bridgeSetup?.clientCapabilities),
+      authMethods: params.authMethods
     })
 
     this.sessions.set(sessionId, session)
@@ -185,6 +282,11 @@ export class PiAcpSession {
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
   private readonly fileCommands: FileSlashCommand[]
+  private readonly bridgeRpcHandler: BridgeRpcHandler | null
+  private readonly promptResourceStore: PromptResourceStore | null
+  private readonly stopReasonOverrides: PromptStopReasonOverrideStore | null
+  private readonly terminalBackedToolNames: Set<string>
+  private readonly authMethods: AuthMethod[]
 
   // Used to map abort semantics to ACP stopReason.
   // Applies to the currently running turn.
@@ -206,6 +308,9 @@ export class PiAcpSession {
   // This is due to pi sending diff as a string as opposed to ACP expected diff format.
   // Compatible format may need to be implemented in pi in the future.
   private editSnapshots = new Map<string, { path: string; oldText: string }>()
+  private pendingExtensionUiPermissions = new Set<string>()
+  private readonly extensionConfirmPolicies = new Map<string, boolean>()
+  private refusalHistoryRestoreCommandAvailable: boolean | null = null
 
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
@@ -218,6 +323,11 @@ export class PiAcpSession {
     proc: PiRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
+    bridgeRpcHandler?: BridgeRpcHandler | null
+    promptResourceStore?: PromptResourceStore | null
+    stopReasonOverrides?: PromptStopReasonOverrideStore | null
+    terminalBackedToolNames?: string[]
+    authMethods?: AuthMethod[]
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -225,6 +335,11 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
+    this.bridgeRpcHandler = opts.bridgeRpcHandler ?? null
+    this.promptResourceStore = opts.promptResourceStore ?? null
+    this.stopReasonOverrides = opts.stopReasonOverrides ?? null
+    this.terminalBackedToolNames = new Set(opts.terminalBackedToolNames ?? [])
+    this.authMethods = opts.authMethods ?? []
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
   }
@@ -260,7 +375,24 @@ export class PiAcpSession {
     })
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  clearPromptResourceLinks(): void {
+    this.promptResourceStore?.clearSessionResourceLinks(this.sessionId)
+  }
+
+  private emitConfigOptionUpdate(pre?: ConfigStateOverride): void {
+    void getSessionConfigOptions(this.proc, pre)
+      .then(configOptions => {
+        this.emit({
+          sessionUpdate: 'config_option_update',
+          configOptions
+        })
+      })
+      .catch(() => {
+        // Best-effort; config updates should not interrupt prompt/tool event handling.
+      })
+  }
+
+  async prompt(message: string, images: unknown[] = [], resourceLinks: PromptResourceLink[] = []): Promise<StopReason> {
     // Keep a prompt-path fallback because some clients may ignore the best-effort
     // pre-prompt notification sent right after session/new.
     this.sendStartupInfoOnFirstPromptIfPending()
@@ -269,7 +401,7 @@ export class PiAcpSession {
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+      const queued: QueuedTurn = { message: expandedMessage, images, resourceLinks, resolve, reject }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -305,6 +437,11 @@ export class PiAcpSession {
   async cancel(): Promise<void> {
     // Cancel current and clear any queued prompts.
     this.cancelRequested = true
+
+    for (const id of this.pendingExtensionUiPermissions) {
+      this.proc.sendExtensionUiResponse({ id, cancelled: true })
+    }
+    this.pendingExtensionUiPermissions.clear()
 
     if (this.turnQueue.length) {
       const queued = this.turnQueue.splice(0, this.turnQueue.length)
@@ -347,9 +484,21 @@ export class PiAcpSession {
     await this.lastEmit
   }
 
+  private releaseAdapterManagedTerminalAfterEmit(terminalId: string): void {
+    if (!this.bridgeRpcHandler) return
+
+    void this.flushEmits()
+      .then(() => this.bridgeRpcHandler?.('terminal/release', { terminalId }))
+      .catch(() => {
+        // Terminal release is cleanup. A failed release should not break prompt completion.
+      })
+  }
+
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
     this.inAgentLoop = false
+    this.stopReasonOverrides?.clear(this.sessionId)
+    this.promptResourceStore?.setSessionResourceLinks(this.sessionId, t.resourceLinks)
 
     this.pendingTurn = { resolve: t.resolve, reject: t.reject }
 
@@ -365,9 +514,16 @@ export class PiAcpSession {
     this.proc.prompt(t.message, t.images).catch(err => {
       // If the subprocess errors before we get an `agent_end`, treat as error unless cancelled.
       // Also ensure we flush any already-enqueued updates first.
+      const authErr = maybeAuthRequiredError(err, { authMethods: this.authMethods })
+      if (!authErr && !this.cancelRequested) {
+        this.emit({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: formatPromptError(err) } satisfies ContentBlock
+        })
+      }
+
       void this.flushEmits().finally(() => {
         // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
-        const authErr = maybeAuthRequiredError(err)
         if (authErr) {
           this.pendingTurn?.reject(authErr)
         } else {
@@ -377,6 +533,7 @@ export class PiAcpSession {
 
         this.pendingTurn = null
         this.inAgentLoop = false
+        this.clearPromptResourceLinks()
 
         // If the prompt failed, do not automatically proceed—pi may be unhealthy.
         // But we still clear the queueDepth metadata.
@@ -450,7 +607,7 @@ export class PiAcpSession {
                 sessionUpdate: 'tool_call',
                 toolCallId,
                 title: toolName,
-                kind: toToolKind(toolName),
+                kind: toToolKind(toolName, this.terminalBackedToolNames),
                 status,
                 locations,
                 rawInput
@@ -507,7 +664,7 @@ export class PiAcpSession {
             sessionUpdate: 'tool_call',
             toolCallId,
             title: toolName,
-            kind: toToolKind(toolName),
+            kind: toToolKind(toolName, this.terminalBackedToolNames),
             status: 'in_progress',
             locations,
             rawInput: args
@@ -552,13 +709,17 @@ export class PiAcpSession {
         const result = (ev as any).result
         const isError = Boolean((ev as any).isError)
         const text = toolResultToText(result)
+        const adapterTerminalId = adapterManagedTerminalId(result)
 
         // If this was an edit and we captured a snapshot, emit a structured ACP diff.
         // This enables clients like Zed to render an actual diff UI.
         const snapshot = this.editSnapshots.get(toolCallId)
-        let content: ToolCallContent[] | undefined
+        let content: ToolCallContent[] | undefined =
+          terminalToolCallContent(result, text) ??
+          (!isError ? adapterManagedDiffContent(result, text) : null) ??
+          undefined
 
-        if (!isError && snapshot) {
+        if (!content && !isError && snapshot) {
           try {
             const abs = isAbsolute(snapshot.path) ? snapshot.path : resolvePath(this.cwd, snapshot.path)
             const newText = readFileSync(abs, 'utf8')
@@ -566,7 +727,7 @@ export class PiAcpSession {
               content = [
                 {
                   type: 'diff',
-                  path: snapshot.path,
+                  path: abs,
                   oldText: snapshot.oldText,
                   newText
                 },
@@ -591,8 +752,33 @@ export class PiAcpSession {
           rawOutput: result
         })
 
+        if (adapterTerminalId) this.releaseAdapterManagedTerminalAfterEmit(adapterTerminalId)
+
         this.currentToolCalls.delete(toolCallId)
         this.editSnapshots.delete(toolCallId)
+        break
+      }
+
+      case 'model_update': {
+        const currentModelId = modelUpdateCurrentModelId(ev)
+        this.emitConfigOptionUpdate(currentModelId ? { currentModelId } : undefined)
+        break
+      }
+
+      case 'thinking_level_update': {
+        const level = String((ev as any).level ?? '')
+        if (!isThinkingLevel(level)) break
+
+        this.emit({
+          sessionUpdate: 'current_mode_update',
+          currentModeId: level
+        })
+        this.emitConfigOptionUpdate({ currentThinkingLevel: level as ThinkingLevel })
+        break
+      }
+
+      case 'extension_ui_request': {
+        void this.handleExtensionUiRequest(ev)
         break
       }
 
@@ -646,13 +832,30 @@ export class PiAcpSession {
       }
 
       case 'agent_end': {
+        const errorMessage = this.cancelRequested || Boolean((ev as any).willRetry) ? null : agentEndErrorMessage(ev)
+        if (errorMessage) {
+          this.emit({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: formatPromptError(errorMessage) } satisfies ContentBlock
+          })
+        }
+
         // Ensure all updates derived from pi events are delivered before we resolve
         // the ACP `session/prompt` request.
-        void this.flushEmits().finally(() => {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
+        void this.flushEmits().finally(async () => {
+          const override = this.stopReasonOverrides?.take(this.sessionId)?.stopReason
+          let reason: StopReason = this.cancelRequested
+            ? 'cancelled'
+            : (override ?? (errorMessage ? 'error' : agentEndStopReason(ev)))
+
+          if (reason === 'refusal' && !(await this.restoreRefusalHistory())) {
+            reason = 'end_turn'
+          }
+
           this.pendingTurn?.resolve(reason)
           this.pendingTurn = null
           this.inAgentLoop = false
+          this.clearPromptResourceLinks()
 
           // Start next queued prompt, if any.
           const next = this.turnQueue.shift()
@@ -676,6 +879,222 @@ export class PiAcpSession {
         break
     }
   }
+
+  private async restoreRefusalHistory(): Promise<boolean> {
+    try {
+      if (this.refusalHistoryRestoreCommandAvailable === null) {
+        this.refusalHistoryRestoreCommandAvailable = await this.hasRefusalHistoryRestoreCommand()
+      }
+      if (!this.refusalHistoryRestoreCommandAvailable) return false
+
+      this.stopReasonOverrides?.takeRefusalHistoryRestore(this.sessionId)
+      await this.proc.prompt(`/${ACP_RESTORE_REFUSAL_HISTORY_COMMAND}`)
+      const result = this.stopReasonOverrides?.takeRefusalHistoryRestore(this.sessionId)
+      if (result?.restored === false) {
+        this.emit({
+          sessionUpdate: 'session_info_update',
+          _meta: {
+            piAcp: {
+              refusalHistoryRestored: false,
+              refusalHistoryRestoreReason: result.reason ?? 'unknown'
+            }
+          }
+        })
+        return false
+      }
+      return result?.restored === true
+    } catch {
+      // ACP refusal carries history semantics. If rollback cannot be proven,
+      // downgrade the final stop reason instead of returning a misleading refusal.
+      return false
+    }
+  }
+
+  private async hasRefusalHistoryRestoreCommand(): Promise<boolean> {
+    const response = (await this.proc.getCommands()) as { commands?: Array<{ name?: unknown }> }
+    const commands = Array.isArray(response?.commands) ? response.commands : []
+    return commands.some(command => command?.name === ACP_RESTORE_REFUSAL_HISTORY_COMMAND)
+  }
+
+  private async handleExtensionUiRequest(ev: PiRpcEvent): Promise<void> {
+    const id = typeof (ev as any).id === 'string' ? (ev as any).id : ''
+    const method = String((ev as any).method ?? '')
+    if (!id) return
+
+    if (method === 'notify') {
+      const text = extensionNotifyText(ev)
+      if (text) {
+        this.emit({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text } satisfies ContentBlock
+        })
+      }
+      return
+    }
+
+    if (method !== 'select' && method !== 'confirm') {
+      this.proc.sendExtensionUiResponse({ id, cancelled: true })
+      return
+    }
+
+    if (method === 'confirm') {
+      const policy = this.extensionConfirmPolicies.get(confirmPolicyKey(ev))
+      if (typeof policy === 'boolean') {
+        this.proc.sendExtensionUiResponse({ id, confirmed: policy })
+        return
+      }
+    }
+
+    this.pendingExtensionUiPermissions.add(id)
+
+    try {
+      const request = toPermissionRequest(this.sessionId, ev)
+      const response = await this.conn.requestPermission(request)
+      if (!this.pendingExtensionUiPermissions.delete(id)) return
+
+      const outcome = response.outcome
+      if (outcome.outcome === 'cancelled') {
+        this.proc.sendExtensionUiResponse({ id, cancelled: true })
+        return
+      }
+
+      if (method === 'confirm') {
+        const confirmed = outcome.optionId === 'confirm' || outcome.optionId === 'confirm_always'
+        if (outcome.optionId === 'confirm_always' || outcome.optionId === 'reject_always') {
+          this.extensionConfirmPolicies.set(confirmPolicyKey(ev), confirmed)
+        }
+        this.proc.sendExtensionUiResponse({ id, confirmed })
+        return
+      }
+
+      const selected = request.options.find(option => option.optionId === outcome.optionId)
+      const value = selected?._meta?.piAcpExtensionUiValue
+      if (typeof value === 'string') {
+        this.proc.sendExtensionUiResponse({ id, value })
+        return
+      }
+
+      this.proc.sendExtensionUiResponse({ id, cancelled: true })
+    } catch {
+      this.pendingExtensionUiPermissions.delete(id)
+      this.proc.sendExtensionUiResponse({ id, cancelled: true })
+    }
+  }
+}
+
+function toPermissionRequest(sessionId: string, ev: PiRpcEvent): RequestPermissionRequest {
+  const id = String((ev as any).id)
+  const method = String((ev as any).method ?? '')
+  const title =
+    typeof (ev as any).title === 'string' && (ev as any).title.trim() ? String((ev as any).title) : 'Extension UI'
+  const rawInput =
+    method === 'confirm'
+      ? { method, title, message: String((ev as any).message ?? '') }
+      : { method, title, options: Array.isArray((ev as any).options) ? (ev as any).options : [] }
+
+  return {
+    sessionId,
+    toolCall: {
+      toolCallId: `extension-ui:${id}`,
+      title,
+      kind: 'other' as const,
+      status: 'pending' as const,
+      rawInput,
+      _meta: {
+        piAcp: {
+          extensionUiRequestId: id,
+          extensionUiMethod: method
+        }
+      }
+    },
+    options: toPermissionOptions(ev)
+  }
+}
+
+function toPermissionOptions(ev: PiRpcEvent): PermissionOption[] {
+  const method = String((ev as any).method ?? '')
+
+  if (method === 'confirm') {
+    return [
+      { optionId: 'confirm', name: 'Confirm', kind: 'allow_once' },
+      { optionId: 'confirm_always', name: 'Always confirm', kind: 'allow_always' },
+      { optionId: 'reject', name: 'Reject', kind: 'reject_once' },
+      { optionId: 'reject_always', name: 'Always reject', kind: 'reject_always' }
+    ]
+  }
+
+  const rawOptions: unknown[] = Array.isArray((ev as any).options) ? (ev as any).options : []
+  const options = rawOptions.map((option: unknown, index: number) => {
+    const value = String(option)
+    return {
+      optionId: `option-${index}`,
+      name: value,
+      kind: 'allow_once',
+      _meta: {
+        piAcpExtensionUiValue: value
+      }
+    } satisfies PermissionOption
+  })
+
+  return [...options, { optionId: 'cancel', name: 'Cancel', kind: 'reject_once' }]
+}
+
+function confirmPolicyKey(ev: PiRpcEvent): string {
+  const title =
+    typeof (ev as any).title === 'string' && (ev as any).title.trim() ? String((ev as any).title) : 'Extension UI'
+  const message = String((ev as any).message ?? '')
+  return JSON.stringify({ method: 'confirm', title, message })
+}
+
+function extensionNotifyText(ev: PiRpcEvent): string | null {
+  const message = typeof (ev as any).message === 'string' ? (ev as any).message.trim() : ''
+  if (!message) return null
+
+  const notifyType = typeof (ev as any).notifyType === 'string' ? (ev as any).notifyType : 'info'
+  if (notifyType === 'error') return `Extension error: ${message}`
+  if (notifyType === 'warning') return `Extension warning: ${message}`
+  return `Extension notice: ${message}`
+}
+
+function formatPromptError(err: unknown): string {
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err)
+  return `Prompt failed: ${message || 'Unknown error'}`
+}
+
+function agentEndErrorMessage(ev: PiRpcEvent): string | null {
+  const messages = Array.isArray((ev as any).messages) ? (ev as any).messages : []
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message?.role !== 'assistant') continue
+    if (message?.stopReason !== 'error') return null
+    return typeof message?.errorMessage === 'string' && message.errorMessage.trim()
+      ? message.errorMessage
+      : 'Assistant returned an error stop reason'
+  }
+  return null
+}
+
+function agentEndStopReason(ev: PiRpcEvent): StopReason {
+  const messages = Array.isArray((ev as any).messages) ? (ev as any).messages : []
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i]
+    if (message?.role !== 'assistant') continue
+    if (message?.stopReason === 'length' || message?.stopReason === 'max_tokens') return 'max_tokens'
+    if (message?.stopReason === 'max_turn_requests') return 'max_turn_requests'
+    if (message?.stopReason === 'refusal') return 'refusal'
+    return 'end_turn'
+  }
+  return 'end_turn'
+}
+
+function modelUpdateCurrentModelId(ev: PiRpcEvent): string | null {
+  const model = (ev as { model?: unknown }).model
+  if (!model || typeof model !== 'object' || Array.isArray(model)) return null
+
+  const provider = String((model as { provider?: unknown }).provider ?? '').trim()
+  const id = String((model as { id?: unknown }).id ?? '').trim()
+  if (!provider || !id) return null
+  return `${provider}/${id}`
 }
 
 function formatAutoRetryMessage(ev: PiRpcEvent): string {
@@ -691,21 +1110,4 @@ function formatAutoRetryMessage(ev: PiRpcEvent): string {
   if (delayMs > 0 && delaySeconds === 0) delaySeconds = 1
 
   return `Retrying (attempt ${attempt}/${maxAttempts}, waiting ${delaySeconds}s)...`
-}
-
-function toToolKind(toolName: string): ToolKind {
-  switch (toolName) {
-    case 'read':
-      return 'read'
-    case 'write':
-    case 'edit':
-      return 'edit'
-    case 'bash':
-      // Many ACP clients render `execute` tool calls only via the terminal APIs.
-      // Since this adapter lets pi execute locally (no client terminal delegation),
-      // we report bash as `other` so clients show inline text output blocks.
-      return 'other'
-    default:
-      return 'other'
-  }
 }

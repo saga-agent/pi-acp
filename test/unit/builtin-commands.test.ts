@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PiAcpAgent } from '../../src/acp/agent.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
+import { acpSchema } from '../helpers/acp-schema.js'
 
 class FakeSessions {
   constructor(private readonly session: any) {}
@@ -50,7 +51,10 @@ test('PiAcpAgent: /name sets session display name adapter-side', async () => {
   assert.equal(proc.prompts.length, 0)
   assert.equal(setTo, 'My Session')
   const info = conn.updates.find(u => (u as any).update?.sessionUpdate === 'session_info_update')
+  acpSchema.sessionNotification.parse({ sessionId: 's1', update: (info as any)?.update })
   assert.equal((info as any)?.update?.title, 'My Session')
+  assert.equal(Object.prototype.hasOwnProperty.call((info as any)?.update ?? {}, 'sessionId'), false)
+  assert.equal(Object.prototype.hasOwnProperty.call((info as any)?.update ?? {}, 'cwd'), false)
 
   const last = conn.updates.at(-1)
   assert.match((last as any).update.content.text, /Session name set: My Session/)

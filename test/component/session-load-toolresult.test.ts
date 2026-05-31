@@ -20,10 +20,38 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
       getMessages: async () => ({
         messages: [
           {
+            role: 'assistant',
+            content: [
+              { type: 'text', text: 'I will run bash.' },
+              { type: 'toolCall', id: 'call_1', name: 'bash', arguments: { command: 'echo hello' } }
+            ]
+          },
+          {
             role: 'toolResult',
             toolCallId: 'call_1',
             toolName: 'bash',
             content: [{ type: 'text', text: 'hello from bash' }],
+            isError: false
+          },
+          {
+            role: 'toolResult',
+            toolCallId: 'call_2',
+            toolName: 'grep',
+            content: [{ type: 'text', text: 'matched line' }],
+            isError: false
+          },
+          {
+            role: 'toolResult',
+            toolCallId: 'call_3',
+            toolName: 'web_fetch',
+            content: [{ type: 'text', text: 'fetched page' }],
+            isError: false
+          },
+          {
+            role: 'toolResult',
+            toolCallId: 'call_4',
+            toolName: 'reasoning',
+            content: [{ type: 'text', text: 'plan created' }],
             isError: false
           }
         ]
@@ -42,12 +70,31 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
 
     const updates = conn.updates.map(u => (u as any).update)
 
-    const toolCall = updates.find(u => u?.sessionUpdate === 'tool_call')
+    const toolCall = updates.find(u => u?.sessionUpdate === 'tool_call' && u.toolCallId === 'call_1')
     assert.ok(toolCall)
     assert.equal(toolCall.toolCallId, 'call_1')
     assert.equal(toolCall.title, 'bash')
+    assert.equal(toolCall.kind, 'execute')
+    assert.equal(toolCall.status, 'completed')
+    assert.deepEqual(toolCall.rawInput, { command: 'echo hello' })
+    assert.equal(updates.filter(u => u?.sessionUpdate === 'tool_call' && u.toolCallId === 'call_1').length, 1)
 
-    const toolCallUpdate = updates.find(u => u?.sessionUpdate === 'tool_call_update')
+    const searchToolCall = updates.find(u => u?.sessionUpdate === 'tool_call' && u.toolCallId === 'call_2')
+    assert.ok(searchToolCall)
+    assert.equal(searchToolCall.title, 'grep')
+    assert.equal(searchToolCall.kind, 'search')
+
+    const fetchToolCall = updates.find(u => u?.sessionUpdate === 'tool_call' && u.toolCallId === 'call_3')
+    assert.ok(fetchToolCall)
+    assert.equal(fetchToolCall.title, 'web_fetch')
+    assert.equal(fetchToolCall.kind, 'fetch')
+
+    const thinkToolCall = updates.find(u => u?.sessionUpdate === 'tool_call' && u.toolCallId === 'call_4')
+    assert.ok(thinkToolCall)
+    assert.equal(thinkToolCall.title, 'reasoning')
+    assert.equal(thinkToolCall.kind, 'think')
+
+    const toolCallUpdate = updates.find(u => u?.sessionUpdate === 'tool_call_update' && u.toolCallId === 'call_1')
     assert.ok(toolCallUpdate)
     assert.equal(toolCallUpdate.toolCallId, 'call_1')
     assert.equal(toolCallUpdate.status, 'completed')

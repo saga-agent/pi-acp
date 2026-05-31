@@ -59,10 +59,20 @@ test('PiAcpAgent: newSession returns AUTH_REQUIRED when pi reports an auth error
   const agent = new PiAcpAgent(asAgentConn(conn), {} as any)
   ;(agent as any).sessions = sessions as any
   ;(agent as any).store = store as any
+  await agent.initialize({
+    protocolVersion: 1,
+    clientCapabilities: {},
+    clientInfo: null,
+    _meta: null
+  })
 
   await assert.rejects(
     () => agent.newSession({ cwd: process.cwd(), mcpServers: [] } as any),
-    (e: any) => e?.code === -32000
+    (e: any) => {
+      assert.equal(e?.code, -32000)
+      assert.deepEqual(e?.data?.authMethods, [])
+      return true
+    }
   )
 
   assert.deepEqual(sessions.closeCalls, ['s-auth'])

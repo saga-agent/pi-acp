@@ -1,4 +1,5 @@
 import type { ContentBlock } from '@agentclientprotocol/sdk'
+import { normalizePromptResourceLinks, type PromptResourceLink } from '../prompt-resources.js'
 
 export type PiImage = {
   type: 'image'
@@ -9,9 +10,11 @@ export type PiImage = {
 export function promptToPiMessage(blocks: ContentBlock[]): {
   message: string
   images: PiImage[]
+  resourceLinks: PromptResourceLink[]
 } {
   let message = ''
   const images: PiImage[] = []
+  const resourceLinks = normalizePromptResourceLinks(blocks)
 
   for (const b of blocks) {
     switch (b.type) {
@@ -67,5 +70,5 @@ export function promptToPiMessage(blocks: ContentBlock[]): {
     }
   }
 
-  return { message, images }
+  return { message, images, resourceLinks }
 }
