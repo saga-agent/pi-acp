@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { getAuthMethods, PI_SETUP_METHOD_ID } from '../../src/acp/auth.js'
 
 test('getAuthMethods: includes Zed terminal-auth metadata when enabled', () => {
-  const methods = getAuthMethods({ supportsTerminalAuthMeta: true })
+  const methods = getAuthMethods({ supportsTerminalAuth: false, supportsTerminalAuthMeta: true })
   assert.equal(methods.length, 1)
   const m: any = methods[0]
 
@@ -16,7 +16,12 @@ test('getAuthMethods: includes Zed terminal-auth metadata when enabled', () => {
 })
 
 test('getAuthMethods: omits Zed terminal-auth metadata when disabled', () => {
-  const methods = getAuthMethods({ supportsTerminalAuthMeta: false })
+  const methods = getAuthMethods({ supportsTerminalAuth: true, supportsTerminalAuthMeta: false })
   const m: any = methods[0]
   assert.ok(!m._meta || !m._meta['terminal-auth'])
+})
+
+test('getAuthMethods: returns no terminal method when the client cannot run terminal auth', () => {
+  const methods = getAuthMethods({ supportsTerminalAuth: false, supportsTerminalAuthMeta: false })
+  assert.deepEqual(methods, [])
 })

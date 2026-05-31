@@ -10,8 +10,14 @@ export const PI_SETUP_METHOD_ID = 'pi_terminal_login'
  *  - `_meta["terminal-auth"]`: used by Zed to render the "Authenticate" banner + button.
  *  - `type/args/env`: registry-required shape.
  */
-export function getAuthMethods(opts?: { supportsTerminalAuthMeta?: boolean }): AuthMethod[] {
+export function getAuthMethods(opts?: {
+  supportsTerminalAuth?: boolean
+  supportsTerminalAuthMeta?: boolean
+}): AuthMethod[] {
+  const supportsTerminalAuth = opts?.supportsTerminalAuth ?? true
   const supportsTerminalAuthMeta = opts?.supportsTerminalAuthMeta ?? true
+
+  if (!supportsTerminalAuth && !supportsTerminalAuthMeta) return []
 
   const method: any = {
     id: PI_SETUP_METHOD_ID,

@@ -3,14 +3,33 @@ import assert from 'node:assert/strict'
 import { promptToPiMessage } from '../../src/acp/translate/prompt.js'
 
 test('promptToPiMessage: concatenates text and resource links', () => {
-  const { message, images } = promptToPiMessage([
+  const { message, images, resourceLinks } = promptToPiMessage([
     { type: 'text', text: 'Hello' },
-    { type: 'resource_link', uri: 'file:///tmp/foo.txt', name: 'foo' },
+    {
+      type: 'resource_link',
+      uri: 'file:///tmp/foo.txt',
+      name: 'foo',
+      title: 'Foo',
+      description: 'A fixture',
+      mimeType: 'text/plain',
+      size: 12
+    },
     { type: 'text', text: ' world' }
   ])
 
   assert.equal(message, 'Hello\n[Context] file:///tmp/foo.txt world')
   assert.deepEqual(images, [])
+  assert.deepEqual(resourceLinks, [
+    {
+      type: 'resource_link',
+      uri: 'file:///tmp/foo.txt',
+      name: 'foo',
+      title: 'Foo',
+      description: 'A fixture',
+      mimeType: 'text/plain',
+      size: 12
+    }
+  ])
 })
 
 test('promptToPiMessage: includes embedded resource text as marker', () => {

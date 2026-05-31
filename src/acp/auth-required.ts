@@ -1,4 +1,5 @@
 import { RequestError } from '@agentclientprotocol/sdk'
+import type { AuthMethod } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
 
 /**
@@ -6,7 +7,7 @@ import { getAuthMethods } from './auth.js'
  *
  * We can't do a full provider-specific check here, so we look for common substrings.
  */
-export function maybeAuthRequiredError(err: unknown): RequestError | null {
+export function maybeAuthRequiredError(err: unknown, opts?: { authMethods?: AuthMethod[] }): RequestError | null {
   const msg = String((err as any)?.message ?? err ?? '')
   const s = msg.toLowerCase()
 
@@ -30,7 +31,7 @@ export function maybeAuthRequiredError(err: unknown): RequestError | null {
   // Include terminal auth method options in error data.
   return RequestError.authRequired(
     {
-      authMethods: getAuthMethods()
+      authMethods: opts?.authMethods ?? getAuthMethods()
     },
     'Configure an API key or log in with an OAuth provider.'
   )
