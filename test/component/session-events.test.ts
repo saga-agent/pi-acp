@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PromptStopReasonOverrideStore } from '../../src/acp/client-stop-reasons.js'
-import { PiAcpSession } from '../../src/acp/session.js'
+import { PiAcpSession, SessionManager } from '../../src/acp/session.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
 test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
@@ -1187,6 +1187,95 @@ test('PiAcpSession: queues concurrent prompt and starts it after agent_end', asy
 
   const r2 = await second
   assert.equal(r2, 'end_turn')
+})
+
+test('PiAcpSession: starts queued prompt after current prompt failure', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  proc.prompt = async (message: string, attachments: unknown[] = []) => {
+    proc.prompts.push({ message, attachments })
+    if (message === 'one') throw new Error('boom')
+  }
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const first = session.prompt('one')
+  const second = session.prompt('two')
+
+  assert.equal(proc.prompts.length, 1)
+  assert.equal(await first, 'error')
+  assert.equal(proc.prompts.length, 2)
+  assert.equal(proc.prompts[1]!.message, 'two')
+
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end' })
+
+  assert.equal(await second, 'end_turn')
+})
+
+test('PiAcpSession: willRetry agent_end keeps prompt pending until final agent_end', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  let resolved = false
+  const pending = session.prompt('hello').then(reason => {
+    resolved = true
+    return reason
+  })
+
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end', willRetry: true })
+
+  await new Promise(r => setTimeout(r, 10))
+  assert.equal(resolved, false)
+
+  proc.emit({ type: 'agent_start' })
+  proc.emit({ type: 'agent_end' })
+
+  assert.equal(await pending, 'end_turn')
+})
+
+test('SessionManager: close settles running and queued prompt turns', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess() as FakePiRpcProcess & { dispose: () => void }
+  let disposeCount = 0
+  proc.dispose = () => {
+    disposeCount += 1
+  }
+
+  const manager = new SessionManager()
+  const session = manager.getOrCreate('s-close', {
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const first = session.prompt('one')
+  const second = session.prompt('two')
+
+  manager.close('s-close')
+
+  assert.equal(await first, 'cancelled')
+  assert.equal(await second, 'cancelled')
+  assert.equal(disposeCount, 1)
 })
 
 test('PiAcpSession: cancel clears queued prompts', async () => {

@@ -210,7 +210,7 @@ export class SessionManager {
   close(sessionId: string): void {
     const s = this.sessions.get(sessionId)
     if (!s) return
-    s.clearPromptResourceLinks()
+    s.dispose('cancelled')
     try {
       s.proc.dispose?.()
     } catch {
@@ -503,7 +503,7 @@ export class PiAcpSession {
     this.cancelRequested = true
 
     for (const id of this.pendingExtensionUiPermissions) {
-      this.proc.sendExtensionUiResponse({ id, cancelled: true })
+      this.proc.sendExtensionUiResponse?.({ id, cancelled: true })
     }
     this.pendingExtensionUiPermissions.clear()
 
@@ -523,6 +523,25 @@ export class PiAcpSession {
 
     // Abort the currently running turn (if any). If nothing is running, this is a no-op.
     await this.proc.abort()
+  }
+
+  dispose(reason: StopReason = 'cancelled'): void {
+    if (reason === 'cancelled') this.cancelRequested = true
+
+    for (const id of this.pendingExtensionUiPermissions) {
+      this.proc.sendExtensionUiResponse?.({ id, cancelled: true })
+    }
+    this.pendingExtensionUiPermissions.clear()
+
+    const pending = this.pendingTurn
+    this.pendingTurn = null
+    this.inAgentLoop = false
+    this.clearPromptResourceLinks()
+
+    pending?.resolve(reason)
+
+    const queued = this.turnQueue.splice(0, this.turnQueue.length)
+    for (const turn of queued) turn.resolve(reason)
   }
 
   wasCancelRequested(): boolean {
@@ -595,12 +614,14 @@ export class PiAcpSession {
           // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
           if (authErr) {
             this.pendingTurn?.reject(authErr)
+            const queued = this.turnQueue.splice(0, this.turnQueue.length)
+            for (const turn of queued) turn.reject(authErr)
           } else {
             const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
             this.pendingTurn?.resolve(reason)
           }
 
-          this.finishPromptTurn({ startNextQueued: false })
+          this.finishPromptTurn({ startNextQueued: !authErr })
         })
         void err
       })
@@ -968,7 +989,12 @@ export class PiAcpSession {
       }
 
       case 'agent_end': {
-        const errorMessage = this.cancelRequested || Boolean((ev as any).willRetry) ? null : agentEndErrorMessage(ev)
+        if (Boolean((ev as any).willRetry) && !this.cancelRequested) {
+          this.inAgentLoop = false
+          break
+        }
+
+        const errorMessage = this.cancelRequested ? null : agentEndErrorMessage(ev)
         if (errorMessage) {
           this.emit({
             sessionUpdate: 'agent_message_chunk',
