@@ -888,6 +888,57 @@ test('PiAcpSession: prompt resolves end_turn on agent_end', async () => {
   assert.equal(reason, 'end_turn')
 })
 
+test('PiAcpSession: extension command prompt resolves end_turn when pi stays idle without agent_end', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+  let getStateCount = 0
+  proc.getState = async () => {
+    getStateCount += 1
+    return { isStreaming: false, isCompacting: false }
+  }
+  proc.getMessages = async () => ({
+    messages: [
+      {
+        role: 'custom',
+        customType: 'extension.command',
+        content: 'EXTENSION STARTUP\nResources from selected profile:\n- none',
+        display: true,
+        timestamp: 1
+      }
+    ]
+  })
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const keepAlive = setTimeout(() => {}, 1_100)
+  try {
+    const reason = await session.prompt('/extension startup')
+
+    assert.equal(reason, 'end_turn')
+    assert.equal(proc.prompts.length, 1)
+    assert.equal(proc.prompts[0]!.message, '/extension startup')
+    assert.equal(getStateCount, 1)
+
+    const runningStates = conn.updates
+      .filter(u => u.update.sessionUpdate === 'session_info_update')
+      .map(u => (u.update as any)._meta?.piAcp?.running)
+
+    assert.deepEqual(runningStates, [true, false])
+
+    const texts = conn.updates.map(u => (u.update as any).content?.text).filter(Boolean)
+    assert.ok(texts.some(text => text.includes('EXTENSION STARTUP')))
+  } finally {
+    clearTimeout(keepAlive)
+  }
+})
+
 test('PiAcpSession: maps pi length stop reason to ACP max_tokens', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

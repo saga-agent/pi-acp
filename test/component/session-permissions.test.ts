@@ -203,6 +203,92 @@ test('PiAcpSession: surfaces extension notify UI as an ACP message chunk', async
   assert.deepEqual(proc.extensionResponses, [])
 })
 
+test('PiAcpSession: surfaces extension status UI as visible ACP updates', async () => {
+  const { conn, proc } = createSession()
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-status',
+    method: 'setStatus',
+    statusKey: 'demo-profile',
+    statusText: 'profile:baseline',
+    severity: 'info',
+    progress: 0.25
+  })
+  await nextTick()
+
+  assert.deepEqual(conn.updates, [
+    {
+      sessionId: 'sess-perm',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Extension UI setStatus demo-profile: profile:baseline' },
+        _meta: {
+          piAcp: {
+            extensionStatusSurface: {
+              method: 'setStatus',
+              key: 'demo-profile',
+              severity: 'info',
+              progress: 0.25
+            }
+          }
+        }
+      }
+    }
+  ])
+  assert.deepEqual(proc.extensionResponses, [{ id: 'ui-status', ok: true }])
+})
+
+test('PiAcpSession: surfaces extension title UI as session info', async () => {
+  const { conn, proc } = createSession()
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-title',
+    method: 'setTitle',
+    title: 'Extension active'
+  })
+  await nextTick()
+
+  assert.deepEqual(conn.updates, [
+    {
+      sessionId: 'sess-perm',
+      update: {
+        sessionUpdate: 'session_info_update',
+        title: 'Extension active'
+      }
+    }
+  ])
+  assert.deepEqual(proc.extensionResponses, [{ id: 'ui-title', ok: true }])
+})
+
+test('PiAcpSession: visibly cancels unsupported extension UI methods', async () => {
+  const { conn, proc } = createSession()
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-unknown',
+    method: 'openPortal'
+  })
+  await nextTick()
+
+  assert.deepEqual(conn.updates, [
+    {
+      sessionId: 'sess-perm',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Unsupported Pi extension UI method `openPortal` was cancelled.' },
+        _meta: {
+          piAcp: {
+            unsupportedExtensionUiMethod: 'openPortal'
+          }
+        }
+      }
+    }
+  ])
+  assert.deepEqual(proc.extensionResponses, [{ id: 'ui-unknown', cancelled: true }])
+})
+
 test('PiAcpSession: cancel responds to pending extension UI permission as cancelled', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

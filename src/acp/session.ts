@@ -49,17 +49,32 @@ type SessionCreateParams = {
 export type StopReason = 'end_turn' | 'cancelled' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'error'
 
 type PendingTurn = {
+  id: number
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
 
 type QueuedTurn = {
+  id: number
   message: string
   images: unknown[]
   resourceLinks: PromptResourceLink[]
+  commandLike: boolean
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
+
+const COMMAND_PROMPT_IDLE_CHECK_DELAY_MS = 1_000
+const EXTENSION_STATUS_SURFACE_METHODS = new Set([
+  'status',
+  'setStatus',
+  'widget',
+  'setWidget',
+  'title',
+  'setTitle',
+  'set_editor_text',
+  'editor_text'
+])
 
 function findUniqueLineNumber(text: string, needle: string): number | undefined {
   if (!needle) return undefined
@@ -75,6 +90,45 @@ function findUniqueLineNumber(text: string, needle: string): number | undefined 
     if (text.charCodeAt(i) === 10) line += 1
   }
   return line
+}
+
+function isCommandLikePrompt(message: string): boolean {
+  return message.trimStart().startsWith('/')
+}
+
+function historyCustomMessageKey(message: unknown, index: number): string | null {
+  const raw = message as Record<string, unknown> | null | undefined
+  if (raw?.role !== 'custom') return null
+
+  const timestamp =
+    typeof raw.timestamp === 'string' || typeof raw.timestamp === 'number' ? String(raw.timestamp) : `index:${index}`
+  const customType = typeof raw.customType === 'string' ? raw.customType : 'custom'
+  const content = typeof raw.content === 'string' ? raw.content : JSON.stringify(raw.content ?? null)
+
+  return `${timestamp}:${customType}:${content}`
+}
+
+function historyCustomMessageText(message: unknown): string | null {
+  const raw = message as Record<string, unknown> | null | undefined
+  if (raw?.role !== 'custom') return null
+  if (raw.display === false) return null
+
+  if (typeof raw.content === 'string') return raw.content
+  if (Array.isArray(raw.content)) {
+    const text = raw.content
+      .map(block => {
+        if (typeof block === 'string') return block
+        if (typeof (block as { text?: unknown } | null | undefined)?.text === 'string') {
+          return (block as { text: string }).text
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+    return text || null
+  }
+
+  return null
 }
 
 function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCallLocation[] | undefined {
@@ -295,6 +349,7 @@ export class PiAcpSession {
   // Current in-flight turn (if any). Additional prompts are queued.
   private pendingTurn: PendingTurn | null = null
   private readonly turnQueue: QueuedTurn[] = []
+  private nextTurnId = 1
   // Track tool call statuses and ensure they are monotonic (pending -> in_progress -> completed).
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
@@ -311,6 +366,7 @@ export class PiAcpSession {
   private pendingExtensionUiPermissions = new Set<string>()
   private readonly extensionConfirmPolicies = new Map<string, boolean>()
   private refusalHistoryRestoreCommandAvailable: boolean | null = null
+  private readonly emittedCustomMessageKeys = new Set<string>()
 
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
@@ -401,7 +457,15 @@ export class PiAcpSession {
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resourceLinks, resolve, reject }
+      const queued: QueuedTurn = {
+        id: this.nextTurnId++,
+        message: expandedMessage,
+        images,
+        resourceLinks,
+        commandLike: isCommandLikePrompt(expandedMessage),
+        resolve,
+        reject
+      }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -500,7 +564,7 @@ export class PiAcpSession {
     this.stopReasonOverrides?.clear(this.sessionId)
     this.promptResourceStore?.setSessionResourceLinks(this.sessionId, t.resourceLinks)
 
-    this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    this.pendingTurn = { id: t.id, resolve: t.resolve, reject: t.reject }
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -511,38 +575,110 @@ export class PiAcpSession {
     // Kick off pi, but completion is determined by pi events, not the RPC response.
     // Important: pi may emit multiple `turn_end` events (e.g. when the model requests tools).
     // The full prompt is finished when we see `agent_end`.
-    this.proc.prompt(t.message, t.images).catch(err => {
-      // If the subprocess errors before we get an `agent_end`, treat as error unless cancelled.
-      // Also ensure we flush any already-enqueued updates first.
-      const authErr = maybeAuthRequiredError(err, { authMethods: this.authMethods })
-      if (!authErr && !this.cancelRequested) {
-        this.emit({
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: formatPromptError(err) } satisfies ContentBlock
-        })
-      }
-
-      void this.flushEmits().finally(() => {
-        // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
-        if (authErr) {
-          this.pendingTurn?.reject(authErr)
-        } else {
-          const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
-          this.pendingTurn?.resolve(reason)
+    this.proc
+      .prompt(t.message, t.images)
+      .then(() => {
+        if (t.commandLike) this.scheduleCommandPromptIdleResolution(t.id)
+      })
+      .catch(err => {
+        // If the subprocess errors before we get an `agent_end`, treat as error unless cancelled.
+        // Also ensure we flush any already-enqueued updates first.
+        const authErr = maybeAuthRequiredError(err, { authMethods: this.authMethods })
+        if (!authErr && !this.cancelRequested) {
+          this.emit({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: formatPromptError(err) } satisfies ContentBlock
+          })
         }
 
-        this.pendingTurn = null
-        this.inAgentLoop = false
-        this.clearPromptResourceLinks()
+        void this.flushEmits().finally(() => {
+          // If this looks like an auth/config issue, surface AUTH_REQUIRED so clients can offer terminal login.
+          if (authErr) {
+            this.pendingTurn?.reject(authErr)
+          } else {
+            const reason: StopReason = this.cancelRequested ? 'cancelled' : 'error'
+            this.pendingTurn?.resolve(reason)
+          }
 
-        // If the prompt failed, do not automatically proceed—pi may be unhealthy.
-        // But we still clear the queueDepth metadata.
-        this.emit({
-          sessionUpdate: 'session_info_update',
-          _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
+          this.finishPromptTurn({ startNextQueued: false })
         })
+        void err
       })
-      void err
+  }
+
+  private scheduleCommandPromptIdleResolution(turnId: number): void {
+    const timer = setTimeout(() => {
+      void this.resolveCommandPromptIfIdle(turnId)
+    }, COMMAND_PROMPT_IDLE_CHECK_DELAY_MS)
+    timer.unref?.()
+  }
+
+  private async resolveCommandPromptIfIdle(turnId: number): Promise<void> {
+    if (this.pendingTurn?.id !== turnId || this.inAgentLoop) return
+
+    let state: any = null
+    try {
+      state = (await this.proc.getState()) as any
+    } catch {
+      return
+    }
+
+    if (this.pendingTurn?.id !== turnId || this.inAgentLoop) return
+    if (state?.isStreaming || state?.isCompacting) return
+
+    await this.emitNewCustomMessagesFromHistory()
+    await this.flushEmits()
+
+    if (this.pendingTurn?.id !== turnId || this.inAgentLoop) return
+    this.pendingTurn.resolve('end_turn')
+    this.finishPromptTurn({ startNextQueued: true })
+  }
+
+  private async emitNewCustomMessagesFromHistory(): Promise<void> {
+    let messages: unknown[]
+    try {
+      const data = (await this.proc.getMessages()) as { messages?: unknown[] }
+      messages = Array.isArray(data?.messages) ? data.messages : []
+    } catch {
+      return
+    }
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]
+      const key = historyCustomMessageKey(message, index)
+      if (!key || this.emittedCustomMessageKeys.has(key)) continue
+      this.emittedCustomMessageKeys.add(key)
+
+      const text = historyCustomMessageText(message)
+      if (!text) continue
+
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text } satisfies ContentBlock
+      })
+    }
+  }
+
+  private finishPromptTurn(opts: { startNextQueued: boolean }): void {
+    this.pendingTurn = null
+    this.inAgentLoop = false
+    this.clearPromptResourceLinks()
+
+    if (opts.startNextQueued) {
+      const next = this.turnQueue.shift()
+      if (next) {
+        this.emit({
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
+        })
+        this.startTurn(next)
+        return
+      }
+    }
+
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      _meta: { piAcp: { queueDepth: this.turnQueue.length, running: false } }
     })
   }
 
@@ -853,24 +989,7 @@ export class PiAcpSession {
           }
 
           this.pendingTurn?.resolve(reason)
-          this.pendingTurn = null
-          this.inAgentLoop = false
-          this.clearPromptResourceLinks()
-
-          // Start next queued prompt, if any.
-          const next = this.turnQueue.shift()
-          if (next) {
-            this.emit({
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
-            })
-            this.startTurn(next)
-          } else {
-            this.emit({
-              sessionUpdate: 'session_info_update',
-              _meta: { piAcp: { queueDepth: 0, running: false } }
-            })
-          }
+          this.finishPromptTurn({ startNextQueued: true })
         })
         break
       }
@@ -932,7 +1051,14 @@ export class PiAcpSession {
       return
     }
 
+    if (EXTENSION_STATUS_SURFACE_METHODS.has(method)) {
+      this.emitExtensionStatusSurface(ev)
+      this.proc.sendExtensionUiResponse({ id, ok: true })
+      return
+    }
+
     if (method !== 'select' && method !== 'confirm') {
+      this.emitUnsupportedExtensionUiMethod(method)
       this.proc.sendExtensionUiResponse({ id, cancelled: true })
       return
     }
@@ -979,6 +1105,43 @@ export class PiAcpSession {
       this.pendingExtensionUiPermissions.delete(id)
       this.proc.sendExtensionUiResponse({ id, cancelled: true })
     }
+  }
+
+  private emitExtensionStatusSurface(ev: PiRpcEvent): void {
+    const surface = extensionStatusSurface(ev)
+    if (surface.title) {
+      this.emit({
+        sessionUpdate: 'session_info_update',
+        title: surface.title
+      } as SessionUpdate)
+    }
+
+    if (surface.text) {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: surface.text ?? '' } satisfies ContentBlock,
+        _meta: {
+          piAcp: {
+            extensionStatusSurface: surface.meta
+          }
+        }
+      })
+    }
+  }
+
+  private emitUnsupportedExtensionUiMethod(method: string): void {
+    this.emit({
+      sessionUpdate: 'agent_message_chunk',
+      content: {
+        type: 'text',
+        text: `Unsupported Pi extension UI method \`${boundedExtensionUiValue(method)}\` was cancelled.`
+      } satisfies ContentBlock,
+      _meta: {
+        piAcp: {
+          unsupportedExtensionUiMethod: boundedExtensionUiValue(method)
+        }
+      }
+    })
   }
 }
 
@@ -1054,6 +1217,75 @@ function extensionNotifyText(ev: PiRpcEvent): string | null {
   if (notifyType === 'error') return `Extension error: ${message}`
   if (notifyType === 'warning') return `Extension warning: ${message}`
   return `Extension notice: ${message}`
+}
+
+function extensionStatusSurface(ev: PiRpcEvent): {
+  title?: string
+  text?: string
+  meta?: Record<string, unknown>
+} {
+  const method = String((ev as any).method ?? '')
+  const key = firstExtensionUiString(ev, ['statusKey', 'status_key', 'widgetKey', 'widget_key', 'key'])
+  const title = firstExtensionUiString(ev, ['title', 'statusTitle', 'status_title'])
+  const severity = firstExtensionUiString(ev, ['severity', 'notifyType', 'notify_type'])
+  const progress =
+    typeof (ev as any).progress === 'number' && Number.isFinite((ev as any).progress)
+      ? Math.max(0, Math.min(1, (ev as any).progress))
+      : undefined
+  const clear = Boolean((ev as any).clear)
+  const lines = Array.isArray((ev as any).widgetLines)
+    ? (ev as any).widgetLines
+    : Array.isArray((ev as any).widget_lines)
+      ? (ev as any).widget_lines
+      : undefined
+  const lineText = Array.isArray(lines)
+    ? lines
+        .map(line => String(line))
+        .filter(Boolean)
+        .join('\n')
+    : ''
+  const body = firstExtensionUiString(ev, [
+    'statusText',
+    'status_text',
+    'text',
+    'message',
+    'value',
+    'editorText',
+    'editor_text'
+  ])
+  const displayText = lineText || body
+  const label = key ? `${method} ${key}` : method
+  const text = clear
+    ? `Extension UI cleared ${label}.`
+    : displayText
+      ? `Extension UI ${label}: ${displayText}`
+      : title && (method === 'title' || method === 'setTitle')
+        ? undefined
+        : `Extension UI ${label}.`
+
+  return {
+    title,
+    text,
+    meta: {
+      method,
+      ...(key ? { key } : {}),
+      ...(severity ? { severity } : {}),
+      ...(progress === undefined ? {} : { progress }),
+      ...(clear ? { clear: true } : {})
+    }
+  }
+}
+
+function firstExtensionUiString(ev: PiRpcEvent, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = (ev as any)[key]
+    if (typeof value === 'string' && value.trim()) return boundedExtensionUiValue(value)
+  }
+  return undefined
+}
+
+function boundedExtensionUiValue(value: string): string {
+  return value.length <= 4000 ? value : `${value.slice(0, 4000)}...`
 }
 
 function formatPromptError(err: unknown): string {

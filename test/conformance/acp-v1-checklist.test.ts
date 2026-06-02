@@ -157,3 +157,22 @@ test('ACP adapter serves session/set_model only as an explicit SDK compatibility
   const agent = new PiAcpAgent({} as any)
   assert.equal(typeof (agent as any).unstable_setSessionModel, 'function')
 })
+
+test('ACP adapter does not advertise unstable session/fork while it is outside the stable v1 target', async () => {
+  assert.ok(!meta.agentMethods.includes('session/fork'))
+  assert.ok(
+    checklist.knownSdkDrift?.notes.some(note => note.includes('session/fork')),
+    'known SDK drift must record session/fork'
+  )
+
+  const agent = new PiAcpAgent({} as any)
+  assert.equal(typeof (agent as any).unstable_forkSession, 'undefined')
+
+  const initialized = await agent.initialize({
+    protocolVersion: 1,
+    clientCapabilities: {},
+    clientInfo: null,
+    _meta: null
+  })
+  assert.equal(initialized.agentCapabilities?.sessionCapabilities?.fork, undefined)
+})

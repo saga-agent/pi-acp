@@ -57,6 +57,7 @@ type PiRpcCommand =
 type PiRpcExtensionUiResponsePayload =
   | { id: string; value: string }
   | { id: string; confirmed: boolean }
+  | { id: string; ok: true }
   | { id: string; cancelled: true }
 
 type PiRpcResponse = {
