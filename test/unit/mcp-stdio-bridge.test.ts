@@ -116,6 +116,35 @@ test('MCP stdio bridge: connects, registers tools, and calls tools through pi ex
   }
 })
 
+test('MCP stdio bridge: drains verbose server stderr during startup', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-acp-mcp-stderr-test-'))
+  const serverPath = join(dir, 'stderr-mcp-server.mjs')
+  writeFileSync(serverPath, noisyStderrMcpServerSource(), 'utf8')
+
+  try {
+    const runtime = await connectMcpStdioServers(
+      {
+        cwd: dir,
+        mcpServers: [
+          {
+            name: 'stderr-demo',
+            command: process.execPath,
+            args: [serverPath],
+            env: []
+          }
+        ]
+      },
+      {},
+      { timeoutMs: 2_000 }
+    )
+
+    assert.deepEqual(runtime.getStatus(), [{ name: 'stderr-demo', state: 'connected', toolCount: 0 }])
+    await runtime.close()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('MCP stdio bridge: registers newly listed tools after tools/list_changed notification', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pi-acp-mcp-dynamic-test-'))
   const serverPath = join(dir, 'dynamic-mcp-server.mjs')
@@ -453,6 +482,45 @@ function handle(message) {
       isError: false
     })
   }
+}
+`
+}
+
+function noisyStderrMcpServerSource(): string {
+  return `
+const chunk = Buffer.alloc(1024 * 1024, 'x')
+for (let index = 0; index < 4; index += 1) {
+  if (!process.stderr.write(chunk)) await new Promise(resolve => process.stderr.once('drain', resolve))
+}
+
+let buffer = ''
+
+process.stdin.on('data', chunk => {
+  buffer += chunk.toString('utf8')
+  let index
+  while ((index = buffer.indexOf('\\n')) >= 0) {
+    const line = buffer.slice(0, index).trim()
+    buffer = buffer.slice(index + 1)
+    if (line) handle(JSON.parse(line))
+  }
+})
+
+function send(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n')
+}
+
+function handle(message) {
+  if (message.method === 'initialize') {
+    send(message.id, {
+      protocolVersion: message.params.protocolVersion,
+      capabilities: { tools: {} },
+      serverInfo: { name: 'stderr-mcp', version: '1.0.0' }
+    })
+    return
+  }
+
+  if (message.method === 'notifications/initialized') return
+  if (message.method === 'tools/list') send(message.id, { tools: [] })
 }
 `
 }

@@ -581,6 +581,13 @@ test('ACP bridge extension: exposes client fs service methods and tool shims', a
     })
     assert.match(writeResult.content[0].text, /Wrote 10 bytes/)
 
+    const emptyWriteResult = await tools.get('acp_write_text_file').execute('write-empty-1', {
+      path: '/tmp/empty-client.txt',
+      content: ''
+    })
+    assert.match(emptyWriteResult.content[0].text, /Wrote 0 bytes/)
+    assert.equal(files.get('/tmp/empty-client.txt'), '')
+
     const shadowRead = await tools.get('read').execute('read-shadow', {
       path: 'relative.txt',
       offset: 2,
@@ -609,6 +616,20 @@ test('ACP bridge extension: exposes client fs service methods and tool shims', a
       tool: 'write'
     })
 
+    const emptyShadowWrite = await tools.get('write').execute('write-empty-shadow', {
+      path: 'empty-new.txt',
+      content: ''
+    })
+    assert.deepEqual(files.get('/tmp/project/empty-new.txt'), '')
+    assert.deepEqual(emptyShadowWrite.details, {
+      path: '/tmp/project/empty-new.txt',
+      bytes: 0,
+      oldText: null,
+      newText: '',
+      source: 'acp-client-fs',
+      tool: 'write'
+    })
+
     const shadowEdit = await tools.get('edit').execute('edit-shadow', {
       path: 'edit.txt',
       edits: [{ oldText: 'beta', newText: 'BETA' }]
@@ -632,9 +653,12 @@ test('ACP bridge extension: exposes client fs service methods and tool shims', a
       { method: 'fs/write_text_file', params: { path: '/tmp/client.txt', content: 'tool write' } }
     ])
     assert.deepEqual(calls.slice(4), [
+      { method: 'fs/write_text_file', params: { path: '/tmp/empty-client.txt', content: '' } },
       { method: 'fs/read_text_file', params: { path: '/tmp/project/relative.txt', line: 2, limit: 1 } },
       { method: 'fs/read_text_file', params: { path: '/tmp/project/new.txt' } },
       { method: 'fs/write_text_file', params: { path: '/tmp/project/new.txt', content: 'shadow write' } },
+      { method: 'fs/read_text_file', params: { path: '/tmp/project/empty-new.txt' } },
+      { method: 'fs/write_text_file', params: { path: '/tmp/project/empty-new.txt', content: '' } },
       { method: 'fs/read_text_file', params: { path: '/tmp/project/edit.txt' } },
       {
         method: 'fs/write_text_file',
@@ -817,6 +841,7 @@ test('ACP bridge extension: kills client terminal on timeout and abort interrupt
   const calls: Array<{ method: string; params: unknown }> = []
   let terminalIndex = 0
   let pendingExit = deferred<void>()
+  const killedTerminals = new Set<string>()
   const rpc = await startBridgeRpcServer(async (method, params) => {
     calls.push({ method, params })
     if (method === 'terminal/create') {
@@ -825,10 +850,14 @@ test('ACP bridge extension: kills client terminal on timeout and abort interrupt
       return { terminalId: `term-interrupt-${terminalIndex}` }
     }
     if (method === 'terminal/wait_for_exit') {
-      await pendingExit.promise
-      return { exitCode: null, signal: 'killed' }
+      const request = params as { terminalId?: unknown }
+      const terminalId = String(request.terminalId ?? '')
+      await Promise.race([pendingExit.promise, new Promise(resolve => setTimeout(resolve, 250))])
+      return killedTerminals.has(terminalId) ? { exitCode: null, signal: 'killed' } : { exitCode: 0, signal: null }
     }
     if (method === 'terminal/kill') {
+      const request = params as { terminalId?: unknown }
+      if (typeof request.terminalId === 'string') killedTerminals.add(request.terminalId)
       pendingExit.resolve()
       return {}
     }
@@ -880,6 +909,14 @@ test('ACP bridge extension: kills client terminal on timeout and abort interrupt
     assert.deepEqual(bashResult.content, [{ type: 'text', text: 'interrupted 2\n' }])
     assert.deepEqual(bashResult.details.exitStatus, { exitCode: null, signal: 'aborted' })
 
+    const controllerForAcpTool = new AbortController()
+    controllerForAcpTool.abort()
+    const acpTerminalResult = await tools
+      .get('acp_terminal_execute')
+      .execute('terminal-aborted', { command: 'sleep', args: ['10'] }, controllerForAcpTool.signal)
+    assert.deepEqual(acpTerminalResult.content, [{ type: 'text', text: 'interrupted 3\n' }])
+    assert.deepEqual(acpTerminalResult.details.exitStatus, { exitCode: null, signal: 'aborted' })
+
     const expectedShell = process.platform === 'win32' ? 'cmd.exe' : process.env.SHELL || 'bash'
     const expectedShellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', 'sleep 10'] : ['-lc', 'sleep 10']
     assert.deepEqual(calls, [
@@ -898,7 +935,11 @@ test('ACP bridge extension: kills client terminal on timeout and abort interrupt
       },
       { method: 'terminal/wait_for_exit', params: { terminalId: 'term-interrupt-2' } },
       { method: 'terminal/kill', params: { terminalId: 'term-interrupt-2' } },
-      { method: 'terminal/output', params: { terminalId: 'term-interrupt-2' } }
+      { method: 'terminal/output', params: { terminalId: 'term-interrupt-2' } },
+      { method: 'terminal/create', params: { command: 'sleep', args: ['10'] } },
+      { method: 'terminal/wait_for_exit', params: { terminalId: 'term-interrupt-3' } },
+      { method: 'terminal/kill', params: { terminalId: 'term-interrupt-3' } },
+      { method: 'terminal/output', params: { terminalId: 'term-interrupt-3' } }
     ])
   } finally {
     rpc.close()

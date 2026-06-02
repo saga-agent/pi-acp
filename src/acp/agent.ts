@@ -80,6 +80,7 @@ type HistoricToolCall = {
 }
 
 const SESSION_LIST_CURSOR_PREFIX = 'pi-acp-list:'
+const SESSION_CLOSE_CANCEL_TIMEOUT_MS = 1_000
 const DEFAULT_TOOL_PERMISSION_NAMES = [
   'bash',
   'acp_terminal_execute',
@@ -1088,13 +1089,13 @@ export class PiAcpAgent implements ACPAgent {
     if (!session) throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
 
     try {
-      await session.cancel()
+      await awaitWithTimeout(session.cancel(), SESSION_CLOSE_CANCEL_TIMEOUT_MS)
     } catch {
       // Closing should still free adapter resources even if the underlying pi process
       // is already gone or cannot accept an abort command.
+    } finally {
+      this.sessions.close(params.sessionId)
     }
-
-    this.sessions.close(params.sessionId)
     return {}
   }
 
@@ -1561,6 +1562,20 @@ export class PiAcpAgent implements ACPAgent {
         configOptions: await getSessionConfigOptions(proc, pre)
       }
     })
+  }
+}
+
+async function awaitWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timeout: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>(resolve => {
+        timeout = setTimeout(() => resolve(undefined), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
   }
 }
 

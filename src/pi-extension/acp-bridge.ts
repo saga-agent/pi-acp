@@ -837,7 +837,7 @@ function registerClientFsTools(pi: ExtensionAPI, setup: BridgeSetup, service: Pi
       executionMode: 'sequential',
       execute: async (_toolCallId: string, params: Record<string, unknown>) => {
         const path = requireString(params.path, 'path')
-        const content = requireString(params.content, 'content')
+        const content = requireStringAllowEmpty(params.content, 'content')
         const resolvedPath = resolveClientPath(setup, path)
         await service.writeTextFile(resolvedPath, content)
         return {
@@ -870,7 +870,7 @@ function registerClientFsTools(pi: ExtensionAPI, setup: BridgeSetup, service: Pi
       executionMode: 'sequential',
       execute: async (_toolCallId: string, params: Record<string, unknown>) => {
         const path = requireString(params.path, 'path')
-        const content = requireString(params.content, 'content')
+        const content = requireStringAllowEmpty(params.content, 'content')
         const resolvedPath = resolveClientPath(setup, path)
         const oldText = canRead ? await readClientTextOrNull(service, resolvedPath) : undefined
 
@@ -1076,9 +1076,9 @@ function registerClientTerminalTools(pi: ExtensionAPI, setup: BridgeSetup, servi
       additionalProperties: false
     },
     executionMode: 'sequential',
-    execute: async (_toolCallId: string, params: Record<string, unknown>) => {
+    execute: async (_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => {
       const request = normalizeTerminalToolParams(params)
-      const result = await service.executeTerminalCommand(request, { release: 'manual' })
+      const result = await service.executeTerminalCommand(request, { release: 'manual', signal })
       return {
         content: [{ type: 'text', text: formatTerminalExecutionText(result) }],
         details: {

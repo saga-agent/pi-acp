@@ -566,6 +566,7 @@ class McpStdioClient {
     })
 
     child.stdout.on('data', chunk => this.onStdout(chunk))
+    child.stderr.resume()
     child.on('close', code => {
       this.rejectAll(new Error(`MCP server exited: ${this.server.name} (code=${code})`))
       this.child = null

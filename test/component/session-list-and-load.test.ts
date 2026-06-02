@@ -473,3 +473,32 @@ test('PiAcpAgent: closeSession cancels and disposes the active session', async (
 
   assert.deepEqual(calls, ['cancel', 'close'])
 })
+
+test('PiAcpAgent: closeSession disposes the active session when cancel hangs', async () => {
+  const conn = new FakeAgentSideConnection()
+  const agent = new PiAcpAgent(asAgentConn(conn))
+
+  const calls: string[] = []
+  ;(agent as any).sessions = {
+    maybeGet: (sessionId: string) => {
+      assert.equal(sessionId, 'sess-close-hung-cancel')
+      return {
+        cancel: async () => {
+          calls.push('cancel')
+          await new Promise(() => {})
+        }
+      }
+    },
+    close: (sessionId: string) => {
+      assert.equal(sessionId, 'sess-close-hung-cancel')
+      calls.push('close')
+    }
+  }
+
+  const started = Date.now()
+  const closed = await agent.closeSession({ sessionId: 'sess-close-hung-cancel', _meta: null } as any)
+  acpSchema.closeSessionResponse.parse(closed)
+
+  assert.deepEqual(calls, ['cancel', 'close'])
+  assert.equal(Date.now() - started < 2_000, true)
+})
