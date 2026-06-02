@@ -44,6 +44,7 @@
     "test:pi-e2e": "npm run build && node --import tsx --test test/e2e/**/*.e2e.ts",
     "conformance": "node --import tsx --test test/conformance/**/*.test.ts",
     "smoke": "node scripts/smoke-acp.mjs",
+    "prepare": "npm run build",
     "prepack": "npm run build",
     "prepublishOnly": "npm run test && npm run build"
   },
