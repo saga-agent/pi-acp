@@ -144,6 +144,14 @@ function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCal
   return [{ path: resolvedPath, ...(typeof line === 'number' ? { line } : {}) }]
 }
 
+function toolCallTitle(toolName: string, args: unknown): string {
+  const path =
+    typeof (args as { path?: unknown } | null | undefined)?.path === 'string'
+      ? (args as { path: string }).path
+      : undefined
+  return path ? `${toolName} ${path}` : toolName
+}
+
 function adapterManagedTerminalId(result: unknown): string | null {
   const details = (result as { details?: unknown } | null | undefined)?.details
   if (!details || typeof details !== 'object') return null
@@ -796,7 +804,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call',
                 toolCallId,
-                title: toolName,
+                title: toolCallTitle(toolName, rawInput),
                 kind: toToolKind(toolName, this.terminalBackedToolNames),
                 status,
                 locations,
@@ -853,7 +861,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: toolName,
+            title: toolCallTitle(toolName, args),
             kind: toToolKind(toolName, this.terminalBackedToolNames),
             status: 'in_progress',
             locations,
