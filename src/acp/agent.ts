@@ -182,6 +182,11 @@ function builtinAvailableCommands(): AvailableCommand[] {
       input: { hint: '<name>' }
     },
     {
+      name: 'queue',
+      description: 'Get/set pi steering and follow-up message delivery mode',
+      input: { hint: '(no args to show) all | one-at-a-time' }
+    },
+    {
       name: 'steering',
       description: 'Get/set pi steering message delivery mode (how queued steering messages are delivered)',
       input: { hint: '(no args to show) all | one-at-a-time' }
@@ -194,6 +199,20 @@ function builtinAvailableCommands(): AvailableCommand[] {
     {
       name: 'changelog',
       description: 'Show pi changelog'
+    },
+    {
+      name: 'model',
+      description: 'Get/set the active model',
+      input: { hint: '(no args to show) <provider/model>' }
+    },
+    {
+      name: 'thinking',
+      description: 'Get/set the active thought level',
+      input: { hint: '(no args to show) off|minimal|low|medium|high|xhigh' }
+    },
+    {
+      name: 'clear',
+      description: "Start a new session from the ACP client's new-session control"
     }
   ]
 }
@@ -748,6 +767,54 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
+      if (cmd === 'queue') {
+        const modeRaw = String(args[0] ?? '').toLowerCase()
+        const state = (await session.proc.getState()) as any
+        const steering = String(state?.steeringMode ?? '')
+        const followUp = String(state?.followUpMode ?? '')
+
+        if (!modeRaw) {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: {
+                type: 'text',
+                text: `Queue mode: steering ${steering || 'unknown'}, follow-up ${followUp || 'unknown'}`
+              }
+            }
+          })
+          return { stopReason: 'end_turn' }
+        }
+
+        if (modeRaw !== 'all' && modeRaw !== 'one-at-a-time') {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: {
+                type: 'text',
+                text: 'Usage: /queue all | /queue one-at-a-time'
+              }
+            }
+          })
+          return { stopReason: 'end_turn' }
+        }
+
+        await session.proc.setSteeringMode(modeRaw as 'all' | 'one-at-a-time')
+        await session.proc.setFollowUpMode(modeRaw as 'all' | 'one-at-a-time')
+
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: `Queue mode set to: ${modeRaw}` }
+          }
+        })
+
+        return { stopReason: 'end_turn' }
+      }
+
       if (cmd === 'steering') {
         const modeRaw = String(args[0] ?? '').toLowerCase()
         const state = (await session.proc.getState()) as any
@@ -914,6 +981,125 @@ export class PiAcpAgent implements ACPAgent {
           update: {
             sessionUpdate: 'agent_message_chunk',
             content: { type: 'text', text }
+          }
+        })
+
+        return { stopReason: 'end_turn' }
+      }
+
+      if (cmd === 'model') {
+        const modelId = args.join(' ').trim()
+        const models = await getModelState(session.proc)
+
+        if (!models) {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'No models are available in this pi session.' }
+            }
+          })
+          return { stopReason: 'end_turn' }
+        }
+
+        if (!modelId) {
+          const options = models.availableModels.map(model => model.modelId).join(', ')
+          const text = options
+            ? `Current model: ${models.currentModelId}\nAvailable models: ${options}`
+            : `Current model: ${models.currentModelId}`
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text }
+            }
+          })
+          return { stopReason: 'end_turn' }
+        }
+
+        try {
+          const selected = await this.setSessionModelById(session.sessionId, modelId)
+          await this.emitConfigOptionUpdate(session.sessionId, session.proc, {
+            currentModelId: selected.currentModelId
+          })
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: `Model set to: ${selected.currentModelId}` }
+            }
+          })
+        } catch (e: any) {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: `Failed to set model: ${String(e?.message ?? e)}` }
+            }
+          })
+        }
+
+        return { stopReason: 'end_turn' }
+      }
+
+      if (cmd === 'thinking') {
+        const level = String(args[0] ?? '').toLowerCase()
+        const thinking = await getThinkingState(session.proc)
+
+        if (!level) {
+          const options = thinking.availableModes.map(mode => mode.id).join(', ')
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: {
+                type: 'text',
+                text: `Thought level: ${thinking.currentModeId}\nAvailable thought levels: ${options}`
+              }
+            }
+          })
+          return { stopReason: 'end_turn' }
+        }
+
+        if (!isThinkingLevel(level)) {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              content: { type: 'text', text: 'Usage: /thinking off | minimal | low | medium | high | xhigh' }
+            }
+          })
+          return { stopReason: 'end_turn' }
+        }
+
+        await session.proc.setThinkingLevel(level)
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'current_mode_update',
+            currentModeId: level
+          }
+        })
+        await this.emitConfigOptionUpdate(session.sessionId, session.proc, {
+          currentThinkingLevel: level
+        })
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: `Thought level set to: ${level}` }
+          }
+        })
+
+        return { stopReason: 'end_turn' }
+      }
+
+      if (cmd === 'clear') {
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: "Use the ACP client's new-session control to clear the conversation." }
           }
         })
 

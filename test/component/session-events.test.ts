@@ -1152,6 +1152,29 @@ test('PiAcpSession: cancel flips stopReason to cancelled', async () => {
   assert.equal(reason, 'cancelled')
 })
 
+test('PiAcpSession: cancel settles prompt when pi aborts without agent_end', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const p = session.prompt('hello')
+  await session.cancel()
+  const reason = await p
+
+  assert.equal(proc.abortCount, 1)
+  assert.equal(reason, 'cancelled')
+  assert.equal(conn.updates.at(-1)?.update.sessionUpdate, 'session_info_update')
+  assert.equal((conn.updates.at(-1)?.update as any)._meta.piAcp.running, false)
+})
+
 test('PiAcpSession: queues concurrent prompt and starts it after agent_end', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

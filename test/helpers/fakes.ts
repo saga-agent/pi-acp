@@ -57,6 +57,10 @@ export class FakePiRpcProcess {
   readonly prompts: Array<{ message: string; attachments: unknown[] }> = []
   abortCount = 0
   commands: Array<{ name: string }> = []
+  model: { provider: string; id: string } = { provider: 'test', id: 'model' }
+  thinkingLevel = 'medium'
+  steeringMode = 'one-at-a-time'
+  followUpMode = 'one-at-a-time'
 
   onEvent(handler: (ev: PiRpcEvent) => void): () => void {
     this.handlers.push(handler)
@@ -78,7 +82,12 @@ export class FakePiRpcProcess {
   }
 
   async getState(): Promise<any> {
-    return {}
+    return {
+      model: this.model,
+      thinkingLevel: this.thinkingLevel,
+      steeringMode: this.steeringMode,
+      followUpMode: this.followUpMode
+    }
   }
 
   async getAvailableModels(): Promise<any> {
@@ -91,6 +100,23 @@ export class FakePiRpcProcess {
 
   async getCommands(): Promise<any> {
     return { commands: this.commands }
+  }
+
+  async setModel(provider: string, modelId: string): Promise<any> {
+    this.model = { provider, id: modelId }
+    return this.model
+  }
+
+  async setThinkingLevel(level: string): Promise<void> {
+    this.thinkingLevel = level
+  }
+
+  async setSteeringMode(mode: string): Promise<void> {
+    this.steeringMode = mode
+  }
+
+  async setFollowUpMode(mode: string): Promise<void> {
+    this.followUpMode = mode
   }
 }
 

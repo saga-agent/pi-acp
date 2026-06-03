@@ -521,8 +521,22 @@ export class PiAcpSession {
       })
     }
 
-    // Abort the currently running turn (if any). If nothing is running, this is a no-op.
-    await this.proc.abort()
+    // Abort the currently running turn (if any). If pi accepts the abort without
+    // emitting `agent_end`, still settle the ACP turn so clients leave running state.
+    try {
+      await this.proc.abort()
+    } catch {
+      this.proc.dispose?.()
+    }
+
+    const pending = this.pendingTurn
+    if (pending) {
+      await this.flushEmits()
+      if (this.pendingTurn === pending) {
+        pending.resolve('cancelled')
+        this.finishPromptTurn({ startNextQueued: false })
+      }
+    }
   }
 
   dispose(reason: StopReason = 'cancelled'): void {
