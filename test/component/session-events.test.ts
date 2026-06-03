@@ -1152,6 +1152,49 @@ test('PiAcpSession: cancel flips stopReason to cancelled', async () => {
   assert.equal(reason, 'cancelled')
 })
 
+test('PiAcpSession: cancel disposes subprocess when pi abort hangs', async () => {
+  class HungAbortProcess extends FakePiRpcProcess {
+    disposeCount = 0
+    private rejectPrompt: ((err: Error) => void) | null = null
+
+    async prompt(message: string, attachments: unknown[] = []): Promise<void> {
+      this.prompts.push({ message, attachments })
+      return new Promise((_resolve, reject) => {
+        this.rejectPrompt = reject
+      })
+    }
+
+    async abort(): Promise<void> {
+      this.abortCount += 1
+      return new Promise(() => undefined)
+    }
+
+    dispose(): void {
+      this.disposeCount += 1
+      this.rejectPrompt?.(new Error('disposed'))
+    }
+  }
+
+  const conn = new FakeAgentSideConnection()
+  const proc = new HungAbortProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const promptResult = session.prompt('hello')
+  await session.cancel()
+
+  assert.equal(proc.abortCount, 1)
+  assert.equal(proc.disposeCount, 1)
+  assert.equal(await promptResult, 'cancelled')
+})
+
 test('PiAcpSession: queues concurrent prompt and starts it after agent_end', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()

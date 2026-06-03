@@ -48,6 +48,8 @@ type SessionCreateParams = {
 
 export type StopReason = 'end_turn' | 'cancelled' | 'max_tokens' | 'max_turn_requests' | 'refusal' | 'error'
 
+const CANCEL_ABORT_TIMEOUT_MS = 1_000
+
 type PendingTurn = {
   id: number
   resolve: (reason: StopReason) => void
@@ -521,12 +523,34 @@ export class PiAcpSession {
       })
     }
 
-    // Abort the currently running turn (if any). If nothing is running, this is a no-op.
-    await this.proc.abort()
+    // Abort the currently running turn (if any). If Pi does not acknowledge abort,
+    // stop the subprocess so the active prompt can resolve through the existing
+    // cancelled subprocess-error path instead of hanging indefinitely.
+    await this.abortOrDisposeAfterTimeout()
   }
 
   wasCancelRequested(): boolean {
     return this.cancelRequested
+  }
+
+  private async abortOrDisposeAfterTimeout(): Promise<void> {
+    let timeout: NodeJS.Timeout | undefined
+
+    try {
+      const outcome = await Promise.race([
+        this.proc.abort().then(() => 'aborted' as const),
+        new Promise<'timeout'>(resolve => {
+          timeout = setTimeout(() => resolve('timeout'), CANCEL_ABORT_TIMEOUT_MS)
+          timeout.unref?.()
+        })
+      ])
+
+      if (outcome === 'timeout') this.proc.dispose?.()
+    } catch {
+      this.proc.dispose?.()
+    } finally {
+      if (timeout) clearTimeout(timeout)
+    }
   }
 
   private emit(update: SessionUpdate): void {
