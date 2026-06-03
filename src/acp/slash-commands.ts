@@ -11,6 +11,7 @@ export type FileSlashCommand = {
   description: string
   content: string
   source: string // e.g. "(user)", "(project)", "(project:frontend)"
+  inputHint?: string
 }
 
 function parseFrontmatter(content: string): {
@@ -28,11 +29,17 @@ function parseFrontmatter(content: string): {
   const remaining = content.slice(endIndex + 4).trim()
 
   for (const line of frontmatterBlock.split('\n')) {
-    const match = line.match(/^(\w+):\s*(.*)$/)
-    if (match) frontmatter[match[1]] = match[2].trim()
+    const match = line.match(/^([\w-]+):\s*(.*)$/)
+    if (match) frontmatter[match[1]] = unquoteFrontmatterValue(match[2].trim())
   }
 
   return { frontmatter, content: remaining }
+}
+
+function unquoteFrontmatterValue(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) return value.slice(1, -1)
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1)
+  return value
 }
 
 function loadCommandsFromDir(dir: string, source: 'user' | 'project', subdir = ''): FileSlashCommand[] {
@@ -77,7 +84,8 @@ function loadCommandsFromDir(dir: string, source: 'user' | 'project', subdir = '
           name,
           description,
           content,
-          source: sourceStr
+          source: sourceStr,
+          inputHint: frontmatter['argument-hint'] || frontmatter.argumentHint || undefined
         })
       } catch {
         // Silently skip unreadable files.
@@ -122,8 +130,8 @@ export function toAvailableCommands(fileCommands: FileSlashCommand[]): Available
 
     out.push({
       name: c.name,
-      description: c.description
-      // input: omitted for now (pi commands don't specify this)
+      description: c.description,
+      ...(c.inputHint ? { input: { hint: c.inputHint } } : {})
     })
   }
 
@@ -169,6 +177,13 @@ export function parseCommandArgs(argsString: string): string[] {
 export function substituteArgs(content: string, args: string[]): string {
   let result = content
 
+  result = result.replace(/\$\{@:(\d+)(?::(\d+))?\}/g, (_m, startRaw, lengthRaw) => {
+    const start = Math.max(1, Number.parseInt(String(startRaw), 10)) - 1
+    const length = lengthRaw === undefined ? undefined : Math.max(0, Number.parseInt(String(lengthRaw), 10))
+    const selected = length === undefined ? args.slice(start) : args.slice(start, start + length)
+    return selected.join(' ')
+  })
+  result = result.replace(/\$ARGUMENTS/g, args.join(' '))
   result = result.replace(/\$@/g, args.join(' '))
   result = result.replace(/\$(\d+)/g, (_m, num) => {
     const idx = Number.parseInt(String(num), 10) - 1
