@@ -33,3 +33,20 @@ test('toAvailableCommandsFromPiGetCommands: includes extension commands by defau
     { name: 'y', description: '(prompt:project)' }
   ])
 })
+
+test('toAvailableCommandsFromPiGetCommands: collapses pi numeric suffix duplicates to the first invocation', () => {
+  const data = {
+    commands: [
+      { name: 'hot-hook:1', description: 'Hot hook first', source: 'extension' },
+      { name: 'hot-hook:2', description: 'Hot hook second', source: 'extension' },
+      { name: 'other:1', description: 'A real single suffixed command', source: 'extension' },
+      { name: 'skill:topic:1', description: 'Skill command keeps suffix', source: 'skill' }
+    ]
+  }
+
+  assert.deepEqual(toAvailableCommandsFromPiGetCommands(data).commands, [
+    { name: 'hot-hook:1', description: 'Hot hook first' },
+    { name: 'other:1', description: 'A real single suffixed command' },
+    { name: 'skill:topic:1', description: 'Skill command keeps suffix' }
+  ])
+})

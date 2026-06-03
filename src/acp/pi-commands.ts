@@ -19,6 +19,28 @@ function describeFallback(c: PiRpcCommandInfo): string {
   return parts.length ? `(${parts.join(':')})` : '(command)'
 }
 
+function numericInvocationSuffixBase(name: string): string | null {
+  const match = name.match(/^(.+):[1-9]\d*$/)
+  return match?.[1] ?? null
+}
+
+function duplicateInvocationSuffixBases(commands: PiRpcCommandInfo[]): Set<string> {
+  const counts = new Map<string, number>()
+
+  for (const c of commands) {
+    const name = typeof c?.name === 'string' ? c.name.trim() : ''
+    const source = typeof c?.source === 'string' ? c.source : ''
+    if (!name || source !== 'extension') continue
+
+    const base = numericInvocationSuffixBase(name)
+    if (!base) continue
+
+    counts.set(base, (counts.get(base) ?? 0) + 1)
+  }
+
+  return new Set([...counts].filter(([, count]) => count > 1).map(([base]) => base))
+}
+
 export function toAvailableCommandsFromPiGetCommands(
   data: unknown,
   opts?: { enableSkillCommands?: boolean; includeExtensionCommands?: boolean }
@@ -37,6 +59,8 @@ export function toAvailableCommandsFromPiGetCommands(
       : []
 
   const out: AvailableCommand[] = []
+  const duplicateSuffixBases = duplicateInvocationSuffixBases(commandsRaw)
+  const emittedDuplicateSuffixBases = new Set<string>()
 
   for (const c of commandsRaw) {
     const name = typeof c?.name === 'string' ? c.name.trim() : ''
@@ -44,6 +68,12 @@ export function toAvailableCommandsFromPiGetCommands(
 
     const source = typeof c?.source === 'string' ? c.source : ''
     if (!includeExtensionCommands && source === 'extension') continue
+
+    const duplicateSuffixBase = source === 'extension' ? numericInvocationSuffixBase(name) : null
+    if (duplicateSuffixBase && duplicateSuffixBases.has(duplicateSuffixBase)) {
+      if (emittedDuplicateSuffixBases.has(duplicateSuffixBase)) continue
+      emittedDuplicateSuffixBases.add(duplicateSuffixBase)
+    }
 
     if (!enableSkillCommands && name.startsWith('skill:')) continue
 
