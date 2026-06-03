@@ -6,7 +6,7 @@ test('toAvailableCommandsFromPiGetCommands: includes extension commands by defau
   const data = {
     commands: [
       { name: 'x', description: 'X', source: 'extension' },
-      { name: 'skill:foo', description: 'Foo', source: 'skill', location: 'user' },
+      { name: 'skill:foo', description: 'Foo', source: 'skill', location: 'user', input: { hint: '<topic>' } },
       { name: 'y', source: 'prompt', location: 'project' }
     ]
   }
@@ -14,7 +14,7 @@ test('toAvailableCommandsFromPiGetCommands: includes extension commands by defau
   const all = toAvailableCommandsFromPiGetCommands(data, { enableSkillCommands: true }).commands
   assert.deepEqual(all, [
     { name: 'x', description: 'X' },
-    { name: 'skill:foo', description: 'Foo' },
+    { name: 'skill:foo', description: 'Foo', input: { hint: '<topic>' } },
     { name: 'y', description: '(prompt:project)' }
   ])
 
@@ -23,7 +23,7 @@ test('toAvailableCommandsFromPiGetCommands: includes extension commands by defau
     includeExtensionCommands: false
   }).commands
   assert.deepEqual(withoutExt, [
-    { name: 'skill:foo', description: 'Foo' },
+    { name: 'skill:foo', description: 'Foo', input: { hint: '<topic>' } },
     { name: 'y', description: '(prompt:project)' }
   ])
 
@@ -31,5 +31,21 @@ test('toAvailableCommandsFromPiGetCommands: includes extension commands by defau
   assert.deepEqual(noSkills, [
     { name: 'x', description: 'X' },
     { name: 'y', description: '(prompt:project)' }
+  ])
+})
+
+test('toAvailableCommandsFromPiGetCommands: preserves command input hints', () => {
+  const data = {
+    commands: [
+      { name: 'from-input-object', description: 'Object', input: { hint: '<value>' } },
+      { name: 'from-input-string', description: 'String', input: '<name>' },
+      { name: 'from-argument-hint', description: 'Hint', 'argument-hint': '[instructions]' }
+    ]
+  }
+
+  assert.deepEqual(toAvailableCommandsFromPiGetCommands(data).commands, [
+    { name: 'from-input-object', description: 'Object', input: { hint: '<value>' } },
+    { name: 'from-input-string', description: 'String', input: { hint: '<name>' } },
+    { name: 'from-argument-hint', description: 'Hint', input: { hint: '[instructions]' } }
   ])
 })

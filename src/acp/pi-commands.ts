@@ -6,6 +6,9 @@ export type PiRpcCommandInfo = {
   source?: unknown
   location?: unknown
   path?: unknown
+  input?: unknown
+  argumentHint?: unknown
+  'argument-hint'?: unknown
 }
 
 function describeFallback(c: PiRpcCommandInfo): string {
@@ -17,6 +20,25 @@ function describeFallback(c: PiRpcCommandInfo): string {
   if (location) parts.push(location)
 
   return parts.length ? `(${parts.join(':')})` : '(command)'
+}
+
+function commandInput(c: PiRpcCommandInfo): AvailableCommand['input'] | undefined {
+  const input = c.input
+  if (input && typeof input === 'object' && typeof (input as { hint?: unknown }).hint === 'string') {
+    const hint = (input as { hint: string }).hint.trim()
+    return hint ? { hint } : undefined
+  }
+
+  const hint =
+    typeof c.argumentHint === 'string'
+      ? c.argumentHint.trim()
+      : typeof c['argument-hint'] === 'string'
+        ? c['argument-hint'].trim()
+        : typeof input === 'string'
+          ? input.trim()
+          : ''
+
+  return hint ? { hint } : undefined
 }
 
 export function toAvailableCommandsFromPiGetCommands(
@@ -49,10 +71,13 @@ export function toAvailableCommandsFromPiGetCommands(
 
     const desc = typeof c?.description === 'string' ? c.description.trim() : ''
 
-    out.push({
+    const available: AvailableCommand = {
       name,
       description: desc || describeFallback(c)
-    })
+    }
+    const input = commandInput(c)
+    if (input) available.input = input
+    out.push(available)
   }
 
   return { commands: out, raw: commandsRaw }
