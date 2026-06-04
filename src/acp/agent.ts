@@ -211,6 +211,11 @@ function builtinAvailableCommands(): AvailableCommand[] {
       input: { hint: '(no args to show) off|minimal|low|medium|high|xhigh' }
     },
     {
+      name: 'think',
+      description: 'Alias for /thinking',
+      input: { hint: '(no args to show) off|minimal|low|medium|high|xhigh' }
+    },
+    {
       name: 'clear',
       description: "Start a new session from the ACP client's new-session control"
     }
@@ -1042,7 +1047,7 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
-      if (cmd === 'thinking') {
+      if (cmd === 'thinking' || cmd === 'think') {
         const level = String(args[0] ?? '').toLowerCase()
         const thinking = await getThinkingState(session.proc)
 
@@ -1066,7 +1071,7 @@ export class PiAcpAgent implements ACPAgent {
             sessionId: session.sessionId,
             update: {
               sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text: 'Usage: /thinking off | minimal | low | medium | high | xhigh' }
+              content: { type: 'text', text: 'Usage: /thinking or /think off | minimal | low | medium | high | xhigh' }
             }
           })
           return { stopReason: 'end_turn' }

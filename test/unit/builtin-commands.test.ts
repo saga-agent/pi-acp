@@ -92,6 +92,7 @@ test('PiAcpAgent: advertised built-in commands include every documented slash co
     'changelog',
     'model',
     'thinking',
+    'think',
     'clear'
   ]) {
     assert.ok(names.has(command), `expected /${command} to be advertised`)
@@ -164,6 +165,31 @@ test('PiAcpAgent: /thinking reports and sets thought level adapter-side', async 
   assert.ok(conn.updates.some(update => update.update?.sessionUpdate === 'current_mode_update'))
   assert.ok(conn.updates.some(update => update.update?.sessionUpdate === 'config_option_update'))
   assert.match((conn.updates.at(-1) as any).update.content.text, /Thought level set to: high/)
+})
+
+test('PiAcpAgent: /think aliases /thinking', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess() as any
+
+  const agent = new PiAcpAgent(asAgentConn(conn))
+  ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] }) as any
+
+  const report = await agent.prompt({
+    sessionId: 's1',
+    prompt: [{ type: 'text', text: '/think' }]
+  } as any)
+  assert.equal(report.stopReason, 'end_turn')
+  assert.match((conn.updates.at(-1) as any).update.content.text, /Thought level: medium/)
+
+  const set = await agent.prompt({
+    sessionId: 's1',
+    prompt: [{ type: 'text', text: '/think low' }]
+  } as any)
+  assert.equal(set.stopReason, 'end_turn')
+  assert.equal(proc.thinkingLevel, 'low')
+  assert.ok(conn.updates.some(update => update.update?.sessionUpdate === 'current_mode_update'))
+  assert.ok(conn.updates.some(update => update.update?.sessionUpdate === 'config_option_update'))
+  assert.match((conn.updates.at(-1) as any).update.content.text, /Thought level set to: low/)
 })
 
 test('PiAcpAgent: /clear is handled visibly adapter-side', async () => {
