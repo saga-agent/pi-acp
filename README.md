@@ -152,7 +152,7 @@ Loaded from:
 - `/queue all|one-at-a-time` – set pi queue mode (unstable feature)
 - `/changelog` – print the installed pi changelog (best-effort)
 - `/steering` - maps to `pi` Steering Mode, get/set
-- `/follow-up` - pats to `pi` Follow-up Mode, get/set
+- `/follow-up` - maps to `pi` Follow-up Mode, get/set
 
 Other built-in commands:
 
@@ -196,11 +196,10 @@ Project layout:
 
 ## Limitations
 
-- No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and executes locally.
-- MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
-- Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).
-- Queue is implemented client-side and should work like pi's `one-at-a-time`
-- ~~ACP clients don't yet suport session history, but ACP sessions from `pi-acp` can be `/resume`d in pi directly~~
+- ACP filesystem and terminal delegation are capability-gated. When the client advertises support, the bundled bridge extension can back pi file and terminal tools through ACP client methods; otherwise pi uses its local file and command behavior.
+- Stdio MCP servers from ACP session setup are wired through the bundled bridge extension. Remaining MCP limitations are mostly UX/API fidelity gaps: removed dynamic MCP tools may remain as disabled registry stubs until pi exposes unregister support, and MCP resources are exposed through bridge services/tool shims rather than a native pi resource browser.
+- Queue is implemented client-side and should work like pi's `one-at-a-time`.
+- Legacy `modes` are still returned for client compatibility, but `configOptions` are the preferred ACP configuration surface.
 
 ## License
 
